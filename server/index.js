@@ -935,10 +935,101 @@ app.post("/api/settings", requireAuth, async (req, res) => {
 });
 
 /* ======================
+   TEST ENDPOINTS (Development)
+====================== */
+
+// Test wallet connection and XLUSD info
+app.get("/api/test/wallet", async (req, res) => {
+  let client;
+  try {
+    if (!process.env.PAYER_SEED) {
+      return res.status(500).json({ error: "PAYER_SEED not configured" });
+    }
+
+    try {
+      const wallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
+      client = await getClient();
+
+      // Get account info
+      const accountInfo = await client.request({
+        command: "account_info",
+        account: wallet.classicAddress,
+        ledger_index: "validated",
+      });
+
+      const xrpBalance = xrpl.dropsToXrp(accountInfo.result.account_data.Balance);
+
+      // Get XLUSD balance
+      const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
+      const accountLines = await client.request({
+        command: "account_lines",
+        account: wallet.classicAddress,
+        ledger_index: "validated",
+      });
+
+      const xlusdLine = accountLines.result.lines?.find(
+        (line) => line.currency === "XLUSD" && line.account === xlusdIssuer
+      );
+
+      // Check DEX price
+      let dexPrice = null;
+      try {
+        const orderBook = await client.request({
+          command: "book_offers",
+          taker_pays: { currency: "XRP" },
+          taker_gets: { currency: "XLUSD", issuer: xlusdIssuer },
+          limit: 1,
+        });
+
+        if (orderBook.result.offers && orderBook.result.offers.length > 0) {
+          const offer = orderBook.result.offers[0];
+          const xrp = typeof offer.TakerPays === "string" 
+            ? parseFloat(xrpl.dropsToXrp(offer.TakerPays))
+            : parseFloat(offer.TakerPays.value || 0);
+          const xlusd = typeof offer.TakerGets === "string"
+            ? parseFloat(offer.TakerGets)
+            : parseFloat(offer.TakerGets.value || 0);
+          dexPrice = xlusd > 0 ? xrp / xlusd : null;
+        }
+      } catch (err) {
+        // DEX check failed, that's OK
+      }
+
+      return res.json({
+        ok: true,
+        wallet: {
+          address: wallet.classicAddress,
+          xrpBalance: parseFloat(xrpBalance),
+          xlusdBalance: xlusdLine ? parseFloat(xlusdLine.balance) : 0,
+          hasTrustline: !!xlusdLine,
+        },
+        xlusd: {
+          issuer: xlusdIssuer,
+          purchasePrice: 1.0, // $1 USD per XLUSD
+          dexPrice: dexPrice,
+          availableOnDEX: dexPrice !== null,
+        },
+      });
+    } catch (seedErr) {
+      return res.status(400).json({
+        error: "Invalid PAYER_SEED format",
+        message: seedErr.message,
+        hint: "Seed should start with 's' and contain no underscores",
+      });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.message || String(err) });
+  } finally {
+    if (client) await client.disconnect();
+  }
+});
+
+/* ======================
    START
 ====================== */
 
 const PORT = 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Backend running at http://localhost:${PORT}`);
+  console.log(`📊 Test wallet: http://localhost:${PORT}/api/test/wallet`);
 });
