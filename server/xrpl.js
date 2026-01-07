@@ -21,10 +21,10 @@ export function generatePreimage() {
 }
 
 /**
- * Create a condition (SHA-256 hash) from a preimage
- * XRPL uses SHA-256 conditions in hex format
+ * Create a condition (SHA-256 crypto-condition) from a preimage
+ * XRPL uses crypto-condition format: type byte (0x02 for SHA-256) + length + hash
  * @param {string} preimage - Hex-encoded preimage
- * @returns {string} Hex-encoded condition
+ * @returns {string} Hex-encoded crypto-condition
  */
 export function createCondition(preimage) {
   if (!preimage || typeof preimage !== "string") {
@@ -34,24 +34,47 @@ export function createCondition(preimage) {
   // Remove any whitespace and convert to lowercase for hashing
   const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
   
-  // Convert hex string to buffer, hash it, and return hex
+  // Convert hex string to buffer, hash it
   const preimageBuffer = Buffer.from(cleanPreimage, "hex");
   const hash = crypto.createHash("sha256").update(preimageBuffer).digest();
   
+  // XRPL crypto-condition format for SHA-256:
+  // Type: 0x02 (SHA-256 condition type)
+  // Length: 0x20 (32 bytes for SHA-256 hash)
+  // Hash: 32-byte SHA-256 hash
+  const type = Buffer.from([0x02]); // SHA-256 crypto-condition type
+  const length = Buffer.from([hash.length]); // Length of hash (32 bytes = 0x20)
+  const condition = Buffer.concat([type, length, hash]);
+  
   // Return as hex string (uppercase for XRPL compatibility)
-  return hash.toString("hex").toUpperCase();
+  return condition.toString("hex").toUpperCase();
 }
 
 /**
  * Validate that a preimage matches a condition
  * @param {string} preimage - Hex-encoded preimage
- * @param {string} condition - Hex-encoded condition
+ * @param {string} condition - Hex-encoded crypto-condition
  * @returns {boolean} True if preimage matches condition
  */
 export function validatePreimage(preimage, condition) {
   try {
-    const computedCondition = createCondition(preimage);
-    return computedCondition.toUpperCase() === condition.toUpperCase();
+    // Condition is now in crypto-condition format (type + length + hash)
+    // Extract just the hash part (skip first 2 bytes: type 0x02 and length 0x20)
+    const conditionBuffer = Buffer.from(condition.replace(/\s+/g, ""), "hex");
+    if (conditionBuffer.length < 34) {
+      return false; // Invalid format
+    }
+    
+    // Extract hash from condition (bytes 2-33, after type and length)
+    const conditionHash = conditionBuffer.slice(2, 34);
+    
+    // Compute hash from preimage
+    const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
+    const preimageBuffer = Buffer.from(cleanPreimage, "hex");
+    const computedHash = crypto.createHash("sha256").update(preimageBuffer).digest();
+    
+    // Compare hashes
+    return computedHash.equals(conditionHash);
   } catch (err) {
     return false;
   }
@@ -212,8 +235,10 @@ export async function createEscrow({
       throw new Error("Condition must be a valid hex string");
     }
     
-    if (conditionHex.length < 32) {
-      throw new Error("Condition must be at least 32 hex characters (16 bytes)");
+    // Crypto-condition format: type (1 byte) + length (1 byte) + hash (32 bytes) = 34 bytes = 68 hex chars
+    // Minimum valid condition is 34 bytes
+    if (conditionHex.length < 68) {
+      throw new Error("Condition must be at least 68 hex characters (34 bytes for crypto-condition format)");
     }
   }
 
@@ -280,13 +305,14 @@ export async function createFreelancerEscrow({
   // FinishAfter is set to deadline - this allows:
   // 1. Client can finish early by providing fulfillment (when satisfied)
   // 2. Auto-refund becomes available after deadline if condition not fulfilled
+  // Note: cancelAfterUnix must be > finishAfterUnix, so we add 1 second to deadline
   const result = await createEscrow({
     client,
     payerWallet: clientWallet,
     payeeAddress: freelancerAddress,
     amountXrp,
-    finishAfterUnix: deadlineUnix, // Fallback time
-    cancelAfterUnix: deadlineUnix, // Can refund after deadline
+    finishAfterUnix: deadlineUnix, // Can finish at deadline or earlier with preimage
+    cancelAfterUnix: deadlineUnix + 1, // Can refund 1 second after deadline (ensures cancelAfter > finishAfter)
     condition: conditionPair.condition,
   });
 
@@ -355,21 +381,29 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
     }
   }
 
-  // 4) Enforce: FinishAfter has passed (if present)
-  // For conditional escrows: FinishAfter is optional - fulfillment alone can finish it
-  // For time-based escrows: FinishAfter must pass before finishing
+  // 4) Enforce deadline/FinishAfter rules
   if (escrow.FinishAfter) {
     const nowUnix = Math.floor(Date.now() / 1000);
     const finishUnix = rippleTimeToUnix(escrow.FinishAfter);
     
     if (hasCondition) {
-      // For conditional escrows: If FinishAfter has passed, fulfillment is optional
-      // If FinishAfter hasn't passed, fulfillment is required (which we already checked above)
-      // So we just log it for informational purposes
-      if (nowUnix < finishUnix && fulfillment) {
-        // Good - fulfillment provided before FinishAfter, allow it
-      } else if (nowUnix >= finishUnix) {
-        // FinishAfter passed, could finish without fulfillment, but we still validate it if provided
+      // For conditional escrows with deadline:
+      // - Can finish BEFORE deadline with fulfillment (preimage)
+      // - Cannot finish AFTER deadline (deadline passed, client can refund instead)
+      if (nowUnix >= finishUnix) {
+        throw new Error(
+          `Deadline has passed. Cannot finish escrow after deadline. ` +
+          `Deadline: ${new Date(finishUnix * 1000).toISOString()}, ` +
+          `Current time: ${new Date(nowUnix * 1000).toISOString()}. ` +
+          `The client can now refund the payment.`
+        );
+      }
+      // Before deadline: require fulfillment (preimage) - already validated above
+      if (!fulfillment) {
+        throw new Error(
+          `Fulfillment (preimage) is required to finish this conditional escrow. ` +
+          `You must provide the preimage that matches the escrow condition.`
+        );
       }
     } else {
       // Time-based escrow: Must wait for FinishAfter

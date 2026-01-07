@@ -16,7 +16,9 @@ import {
   createCondition,
   validatePreimage,
   createFreelancerEscrow,
+  createQAEscrow,
 } from "./xrpl.js";
+import AIChecker from "./ai-checker.js";
 
 dotenv.config();
 
@@ -36,7 +38,7 @@ console.log("✅ SESSION_SECRET loaded:", !!process.env.SESSION_SECRET);
 // parse JSON
 app.use(express.json());
 
-// CORS for Live Server and development
+// CORS for Live Server, development, and live demos (ngrok, localtunnel, etc.)
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -59,9 +61,21 @@ app.use(
         "http://localhost:3000",
       ];
       
-      // In development, also allow any localhost origin
+      // In development/demo, allow:
+      // - localhost origins
+      // - ngrok domains (for live demos)
+      // - localtunnel domains (for live demos)
+      // - Cloudflare tunnel domains
       if (process.env.NODE_ENV !== "production") {
-        if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+        if (
+          origin.includes("localhost") || 
+          origin.includes("127.0.0.1") ||
+          origin.includes(".ngrok-free.app") ||
+          origin.includes(".ngrok.io") ||
+          origin.includes(".loca.lt") ||
+          origin.includes(".trycloudflare.com") ||
+          origin.match(/^https?:\/\/[0-9a-f-]+\.loca\.lt$/) // localtunnel pattern
+        ) {
           return callback(null, true);
         }
       }
@@ -491,16 +505,13 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
           }
         } catch (verifyErr) {
           console.error("Verification error:", verifyErr);
-          // Make sure to send error response before disconnecting
-          const errorResponse = res.status(400).json({ 
+          if (client) await client.disconnect();
+          // Make sure to send error response after disconnecting
+          return res.status(400).json({ 
             ok: false,
             error: "Verification failed: " + (verifyErr.message || verifyErr.toString()),
             details: verifyErr.data?.error || "Unknown error"
           });
-          if (client) await client.disconnect();
-          return errorResponse;
-        } finally {
-          if (client) await client.disconnect();
         }
       }
     );
@@ -651,6 +662,27 @@ function getUserWallet(userId, callback) {
   );
 }
 
+// Get user wallet (including unverified - for escrow creation)
+function getUserWalletAny(userId, callback) {
+  db.get(
+    "SELECT encrypted_seed, wallet_address, is_verified FROM user_wallets WHERE user_id = ?",
+    [userId],
+    (err, wallet) => {
+      if (err || !wallet) {
+        return callback(err || new Error("Wallet not found"), null);
+      }
+
+      try {
+        const seed = decryptSeed(wallet.encrypted_seed);
+        const xrplWallet = xrpl.Wallet.fromSeed(seed);
+        return callback(null, xrplWallet);
+      } catch (decryptErr) {
+        return callback(decryptErr, null);
+      }
+    }
+  );
+}
+
 // LOGOUT
 app.post("/api/logout", (req, res) => {
   req.session.destroy(() => {
@@ -684,11 +716,11 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing finishAfterUnix" });
     }
 
-    // Try to use user's wallet first, fallback to server wallet
+    // Try to use user's wallet first (including unverified), fallback to server wallet
     let payerWallet;
     try {
       const userWallet = await new Promise((resolve, reject) => {
-        getUserWallet(userId, (err, wallet) => {
+        getUserWalletAny(userId, (err, wallet) => {
           if (err) reject(err);
           else resolve(wallet);
         });
@@ -763,6 +795,7 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
   let client;
   try {
     const { ownerAddress, offerSequence, fulfillment } = req.body || {};
+    const userId = req.session.user.id;
     
     if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
       return res.status(400).json({ error: "Missing or invalid ownerAddress" });
@@ -772,12 +805,27 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing offerSequence" });
     }
 
-    const seed = process.env.PAYEE_SEED || process.env.PAYER_SEED;
-    if (!seed) {
-      return res.status(500).json({ error: "Missing PAYEE_SEED or PAYER_SEED" });
+    // Try to use user's wallet first (for service provider finishing escrow)
+    let payeeWallet;
+    try {
+      const userWallet = await new Promise((resolve, reject) => {
+        getUserWalletAny(userId, (err, wallet) => {
+          if (err) reject(err);
+          else resolve(wallet);
+        });
+      });
+      payeeWallet = userWallet;
+    } catch (err) {
+      // Fallback to server wallet
+      if (!process.env.PAYEE_SEED && !process.env.PAYER_SEED) {
+        return res.status(400).json({ 
+          error: "No wallet connected. Please connect your XRP wallet to finish escrows, or server PAYEE_SEED/PAYER_SEED must be configured." 
+        });
+      }
+      const seed = process.env.PAYEE_SEED || process.env.PAYER_SEED;
+      payeeWallet = xrpl.Wallet.fromSeed(seed);
     }
 
-    const payeeWallet = xrpl.Wallet.fromSeed(seed);
     client = await getClient();
 
     const out = await finishEscrow({
@@ -927,6 +975,7 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
   let client;
   try {
     const { freelancerAddress, amountXrp, deadlineUnix, preimage } = req.body || {};
+    const userId = req.session.user.id;
 
     // Basic validation
     if (!freelancerAddress || typeof freelancerAddress !== "string") {
@@ -949,11 +998,26 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
       });
     }
 
-    if (!process.env.PAYER_SEED) {
-      return res.status(500).json({ error: "Missing PAYER_SEED" });
+    // Try to use user's wallet first (including unverified), fallback to server wallet
+    let clientWallet;
+    try {
+      const userWallet = await new Promise((resolve, reject) => {
+        getUserWalletAny(userId, (err, wallet) => {
+          if (err) reject(err);
+          else resolve(wallet);
+        });
+      });
+      clientWallet = userWallet;
+    } catch (err) {
+      // Fallback to server wallet
+      if (!process.env.PAYER_SEED) {
+        return res.status(400).json({ 
+          error: "No wallet connected. Please connect your XRP wallet first, or server PAYER_SEED must be configured." 
+        });
+      }
+      clientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
     }
 
-    const clientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
     client = await getClient();
 
     const result = await createFreelancerEscrow({
@@ -1007,6 +1071,192 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
   } finally {
     if (client) await client.disconnect();
   }
+});
+
+// QA ESCROW - Store requirements in memory (in production, use database)
+const qaEscrowRequirements = {}; // {sequence: {requirements: [], preimage: string, condition: string}}
+
+// CREATE QA ESCROW (with requirements checklist)
+app.post("/escrow/qa/create", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const { providerAddress, amountXrp, deadlineUnix, requirements } = req.body || {};
+    const userId = req.session.user.id;
+
+    // Basic validation
+    if (!providerAddress || typeof providerAddress !== "string") {
+      return res.status(400).json({ error: "Missing or invalid providerAddress" });
+    }
+
+    if (!amountXrp) {
+      return res.status(400).json({ error: "Missing amountXrp" });
+    }
+
+    if (!deadlineUnix) {
+      return res.status(400).json({ error: "Missing deadlineUnix" });
+    }
+
+    // Requirements are optional - if provided, must be valid
+    const validRequirements = [];
+    if (requirements && Array.isArray(requirements)) {
+      const filtered = requirements.filter(req => req && typeof req === "string" && req.trim().length > 0);
+      if (filtered.length > 0) {
+        validRequirements.push(...filtered);
+      }
+    }
+
+    const deadline = Number(deadlineUnix);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(deadline) || deadline <= nowUnix) {
+      return res.status(400).json({ 
+        error: "deadlineUnix must be a future timestamp" 
+      });
+    }
+
+    // Try to use user's wallet first (including unverified), fallback to server wallet
+    let clientWallet;
+    try {
+      const userWallet = await new Promise((resolve, reject) => {
+        getUserWalletAny(userId, (err, wallet) => {
+          if (err) reject(err);
+          else resolve(wallet);
+        });
+      });
+      clientWallet = userWallet;
+    } catch (err) {
+      // Fallback to server wallet
+      if (!process.env.PAYER_SEED) {
+        return res.status(400).json({ 
+          error: "No wallet connected. Please connect your XRP wallet first, or server PAYER_SEED must be configured." 
+        });
+      }
+      clientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
+    }
+
+    client = await getClient();
+
+    // If requirements exist, use conditional escrow. Otherwise, create simple escrow (no condition)
+    let preimage = null;
+    let condition = null;
+    if (validRequirements.length > 0) {
+      // Generate condition/preimage pair for requirements-based escrow
+      const pair = generateConditionPair();
+      preimage = pair.preimage;
+      condition = pair.condition;
+    }
+
+    // Create QA escrow (with or without condition based on requirements)
+    const result = validRequirements.length > 0
+      ? await createQAEscrow({
+          client,
+          clientWallet,
+          providerAddress: providerAddress.trim(),
+          amountXrp,
+          deadlineUnix: deadline,
+          preimage,
+        })
+      : await createEscrow({
+          client,
+          payerWallet: clientWallet,
+          payeeAddress: providerAddress.trim(),
+          amountXrp,
+          finishAfterUnix: deadline, // Can finish anytime before deadline
+          cancelAfterUnix: deadline + 1, // Can refund after deadline
+          condition: null, // No condition - service provider can claim directly
+        });
+
+    const txResult = result.result.result?.meta?.TransactionResult;
+
+    if (txResult !== "tesSUCCESS") {
+      return res.status(400).json({
+        ok: false,
+        txResult,
+        engine_result: result.result.result?.engine_result,
+        engine_result_message: result.result.result?.engine_result_message,
+        txHash: result.result.result?.hash,
+        error: result.result.result?.engine_result_message || `Transaction failed: ${txResult}`,
+      });
+    }
+
+    // Store requirements with sequence (preimage stored on server, never shared with client)
+    qaEscrowRequirements[result.offerSequence] = {
+      requirements: validRequirements,
+      preimage, // Stored on server for automatic fulfillment when verified
+      condition,
+      userId, // Store user ID for security
+      providerAddress: providerAddress.trim(),
+      verifiedRequirements: {}, // Track which requirements are verified: {index: true}
+      allVerified: false, // Flag when all requirements are verified
+      createdAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      ok: true,
+      txHash: result.result.result?.hash,
+      offerSequence: result.offerSequence,
+      txResult,
+      amountXrp: Number(amountXrp),
+      providerAddress: providerAddress.trim(),
+      // Preimage NOT returned to client - stored on server only
+      condition, // Only if requirements exist
+      deadlineUnix: deadline,
+      requirements: validRequirements,
+      hasRequirements: validRequirements.length > 0,
+      workflow: "quality_assurance",
+      instructions: {
+        client: validRequirements.length > 0 
+          ? "Verify all requirements are met. Once verified, service provider can claim payment directly."
+          : "Service provider can claim payment anytime before deadline.",
+        provider: validRequirements.length > 0
+          ? "Payment is locked with quality requirements. Deliver service meeting all requirements. Once client verifies, you can claim payment directly."
+          : "Payment is locked. You can claim payment anytime before the deadline.",
+      },
+    });
+  } catch (err) {
+    const statusCode = err.message?.includes("Invalid") || 
+                       err.message?.includes("must be") ||
+                       err.message?.includes("Cannot")
+                       ? 400 : 500;
+    
+    return res.status(statusCode).json({ 
+      error: err.message || String(err),
+      ok: false,
+    });
+  } finally {
+    if (client) await client.disconnect();
+  }
+});
+
+// GET QA ESCROW REQUIREMENTS
+app.get("/escrow/qa/requirements/:sequence", requireAuth, (req, res) => {
+  const sequence = Number(req.params.sequence);
+  const userId = req.session.user.id;
+
+  if (!Number.isFinite(sequence) || sequence <= 0) {
+    return res.status(400).json({ error: "Invalid sequence number" });
+  }
+
+  const escrowData = qaEscrowRequirements[sequence];
+  
+  if (!escrowData) {
+    return res.status(404).json({ error: "Requirements not found for this escrow sequence" });
+  }
+
+  // Security: Only return if user created it (in production, add more checks)
+  if (escrowData.userId !== userId) {
+    return res.status(403).json({ error: "Not authorized to view this escrow's requirements" });
+  }
+
+  return res.json({
+    ok: true,
+    sequence,
+    requirements: escrowData.requirements,
+    verifiedRequirements: escrowData.verifiedRequirements || {},
+    allVerified: escrowData.allVerified || false,
+    aiVerificationStatus: escrowData.aiVerificationStatus || "pending",
+    aiSummary: escrowData.aiSummary || null,
+    // Never return preimage - it's stored on server only
+  });
 });
 
 // Note: Release happens when freelancer uses /escrow/finish with the preimage

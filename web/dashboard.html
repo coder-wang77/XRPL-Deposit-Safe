@@ -124,58 +124,104 @@
         </div>
       </div>
 
-      <!-- Freelancer Payment Workflow Card -->
-      <div class="card" style="grid-column: 1 / -1; margin-bottom: 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
-        <h3 style="color: white; margin-bottom: 8px;">💼 Freelancer Payment Workflow</h3>
+      <!-- Quality Assurance Escrow Card -->
+      <div class="card" style="grid-column: 1 / -1; margin-bottom: 24px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white;">
+        <h3 style="color: white; margin-bottom: 8px;">✅ Quality Assurance Escrow</h3>
         <p style="color: rgba(255,255,255,0.9); margin-bottom: 20px; font-size: 14px;">
-          Client locks payment → Freelancer delivers → Client releases when satisfied, OR auto-refund after deadline.
+          Client locks payment with quality requirements → Service provider delivers → Client validates checklist → Service provider claims payment (before deadline) OR client refunds (after deadline).
         </p>
         
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
-          <!-- Client Side -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px;">
+          <!-- Client Side: Create QA Escrow -->
           <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px;">
-            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">👤 As Client (Lock Payment)</h4>
+            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">👤 As Client (Create Escrow)</h4>
             
-            <label style="color: rgba(255,255,255,0.9);">Freelancer XRPL Address</label>
-            <input id="f_freelancer" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
+            <label style="color: rgba(255,255,255,0.9);">Service Provider XRPL Address</label>
+            <input id="qa_provider" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
             
             <label style="color: rgba(255,255,255,0.9);">Payment Amount (XRP)</label>
-            <input id="f_amount" type="number" step="0.000001" min="0.000001" placeholder="100.0" style="margin-bottom: 12px;" autocomplete="off" />
+            <input id="qa_amount" type="number" step="0.000001" min="0.000001" placeholder="100.0" style="margin-bottom: 12px;" autocomplete="off" />
             
-            <label style="color: rgba(255,255,255,0.9);">Deadline (when auto-refund becomes available)</label>
-            <input id="f_deadline" type="datetime-local" style="margin-bottom: 16px;" />
+            <label style="color: rgba(255,255,255,0.9);">Deadline (refund available after)</label>
+            <input id="qa_deadline" type="datetime-local" style="margin-bottom: 16px;" />
             
-            <button id="btnFreelancerCreate" style="width: 100%; background: white; color: #667eea; font-weight: 700;">🔒 Lock Payment</button>
+            <label style="color: rgba(255,255,255,0.9); margin-bottom: 8px; display: block;">Quality Requirements Checklist (Optional):</label>
+            <p style="font-size: 11px; color: rgba(255,255,255,0.7); margin-bottom: 8px;">
+              💡 Leave empty if you don't need requirements. Service provider can claim payment anytime before deadline.
+            </p>
+            <div id="qa_checklist" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 12px; min-height: 60px;">
+              <p style="font-size: 11px; color: rgba(255,255,255,0.6); font-style: italic; margin: 0;">
+                No requirements added. Click "Add Requirement" to add quality checks.
+              </p>
+            </div>
+            <button type="button" id="btnAddRequirement" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 12px;">
+              ➕ Add Requirement (Optional)
+            </button>
             
-            <div class="result" id="resFreelancerCreate" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
+            <button id="btnQACreate" style="width: 100%; background: white; color: #10b981; font-weight: 700;">🔒 Lock Payment</button>
+            
+            <div class="result" id="resQACreate" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
+            
+            <div id="qa_approvalSection" style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.15); border-radius: 8px; display: none;">
+              <label style="color: rgba(255,255,255,0.9); font-size: 13px; display: block; margin-bottom: 8px;">✅ Approval Key (Preimage):</label>
+              <input id="qa_preimage" placeholder="Will show after creation" readonly style="font-family: monospace; font-size: 11px; background: rgba(0,0,0,0.2); color: white; width: 100%; padding: 8px; border: none; border-radius: 4px; margin-bottom: 8px;" />
+              <p style="font-size: 11px; color: rgba(255,255,255,0.8); margin: 0;">
+                💡 Share this approval key with service provider ONLY after all requirements are met.
+              </p>
+            </div>
           </div>
           
-          <!-- Release/Refund Side -->
+          <!-- Client Side: View AI Verification Status -->
           <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px;">
-            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">✅ Release Payment / Refund</h4>
+            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">🤖 AI Verification Status</h4>
             
-            <label style="color: rgba(255,255,255,0.9);">Escrow Owner (Client address)</label>
-            <input id="f_release_owner" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
+            <label style="color: rgba(255,255,255,0.9);">Escrow Owner (Your address)</label>
+            <input id="qa_approve_owner" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
             
             <label style="color: rgba(255,255,255,0.9);">Escrow Sequence</label>
-            <input id="f_release_seq" type="number" placeholder="123" min="1" style="margin-bottom: 12px;" autocomplete="off" />
+            <input id="qa_approve_seq" type="number" placeholder="123" min="1" style="margin-bottom: 12px;" autocomplete="off" />
             
-            <div style="display: flex; gap: 8px;">
-              <button id="btnFreelancerRelease" style="flex: 1; background: #10b981; color: white; font-weight: 700;">
-                💰 Release (Share Preimage)
-              </button>
-              <button id="btnFreelancerRefund" style="flex: 1; background: #ef4444; color: white; font-weight: 700;">
-                ❌ Refund After Deadline
-              </button>
+            <label style="color: rgba(255,255,255,0.9); margin-bottom: 8px; display: block;">AI Verification Results:</label>
+            <div id="qa_verify_checklist" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 12px; min-height: 80px;">
+              <p style="font-size: 12px; color: rgba(255,255,255,0.7); margin: 0; font-style: italic;">
+                Enter escrow sequence to view AI verification status...
+              </p>
             </div>
             
-            <div id="f_preimageSection" style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.15); border-radius: 8px; display: none;">
-              <label style="color: rgba(255,255,255,0.9); font-size: 13px;">Preimage to Share with Freelancer:</label>
-              <input id="f_preimage" placeholder="Will show after creation" readonly style="font-family: monospace; font-size: 11px; background: rgba(0,0,0,0.2); color: white; margin-top: 4px;" />
-              <button type="button" id="btnCopyPreimage" style="margin-top: 8px; padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer;">📋 Copy Preimage</button>
-            </div>
+            <button id="btnQALoadRequirements" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 12px;">
+              🔍 View AI Verification Status
+            </button>
             
-            <div class="result" id="resFreelancerRelease" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
+            <button id="btnQATriggerAI" style="width: 100%; background: #3b82f6; color: white; font-weight: 700; margin-bottom: 12px;">
+              🤖 Re-run AI Verification
+            </button>
+            
+            <button id="btnQARefund" style="width: 100%; background: #ef4444; color: white; font-weight: 700;">
+              ❌ Refund (After Deadline)
+            </button>
+            
+            <div class="result" id="resQAApprove" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
+          </div>
+
+          <!-- Service Provider Side: Claim Payment -->
+          <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px;">
+            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">💰 As Service Provider (Claim Payment)</h4>
+            
+            <label style="color: rgba(255,255,255,0.9);">Escrow Owner (Client address)</label>
+            <input id="qa_claim_owner" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
+            
+            <label style="color: rgba(255,255,255,0.9);">Escrow Sequence</label>
+            <input id="qa_claim_seq" type="number" placeholder="123" min="1" style="margin-bottom: 16px;" autocomplete="off" />
+            
+            <button id="btnQAClaim" style="width: 100%; background: #3b82f6; color: white; font-weight: 700;">
+              💰 Claim Payment
+            </button>
+            
+            <p style="font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 12px; margin-bottom: 0;">
+              ⚠️ If escrow has requirements, you can only claim after client verifies them all. You can only claim BEFORE the deadline passes. After deadline, the client can refund.
+            </p>
+            
+            <div class="result" id="resQAClaim" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
           </div>
         </div>
       </div>
