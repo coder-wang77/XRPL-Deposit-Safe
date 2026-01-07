@@ -515,9 +515,15 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
   let client;
   try {
     const userId = req.session.user.id;
+    
+    // Check if we're in simulate mode
+    const simulateXlusd = process.env.SIMULATE_XLUSD === "true" || 
+                          process.env.TEST_MODE === "true" || 
+                          process.env.FAKE_PAYMENTS === "true" ||
+                          (!process.env.XLUSD_ISSUER_SEED && !process.env.PAYER_SEED);
 
     db.get(
-      "SELECT wallet_address, is_verified, created_at, verified_at FROM user_wallets WHERE user_id = ?",
+      "SELECT wallet_address, is_verified, created_at, verified_at, COALESCE(simulated_balance_xrp, 0) as simulated_balance_xrp FROM user_wallets WHERE user_id = ?",
       [userId],
       async (err, wallet) => {
         if (err) {
@@ -529,6 +535,25 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
             ok: true,
             connected: false,
             wallet: null,
+          });
+        }
+
+        const simulatedBalance = parseFloat(wallet.simulated_balance_xrp) || 0;
+
+        // In simulate mode, return simulated balance directly without checking XRPL
+        if (simulateXlusd && simulatedBalance > 0) {
+          return res.json({
+            ok: true,
+            connected: true,
+            verified: !!wallet.is_verified,
+            wallet: {
+              address: wallet.wallet_address,
+              existsOnLedger: null,
+              balanceXrp: simulatedBalance,
+              simulated: true,
+              createdAt: wallet.created_at,
+              verifiedAt: wallet.verified_at,
+            },
           });
         }
 
@@ -545,6 +570,21 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
             });
           } catch (apiErr) {
             if (apiErr.data?.error === "actNotFound") {
+              // If wallet doesn't exist on XRPL but we have simulated balance, use that
+              if (simulatedBalance > 0) {
+                return res.json({
+                  ok: true,
+                  connected: true,
+                  verified: !!wallet.is_verified,
+                  wallet: {
+                    address: wallet.wallet_address,
+                    existsOnLedger: false,
+                    balanceXrp: simulatedBalance,
+                    simulated: true,
+                    message: "Wallet not activated on XRPL. Using simulated balance.",
+                  },
+                });
+              }
               return res.json({
                 ok: true,
                 connected: true,
@@ -563,6 +603,9 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
           const balanceDrops = accountInfo.result.account_data?.Balance || "0";
           const balanceXrp = parseFloat(xrpl.dropsToXrp(balanceDrops));
           const sequence = accountInfo.result.account_data?.Sequence || 0;
+          
+          // Combine real XRPL balance with simulated balance
+          const totalBalance = balanceXrp + simulatedBalance;
 
           return res.json({
             ok: true,
@@ -571,7 +614,9 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
             wallet: {
               address: wallet.wallet_address,
               existsOnLedger: true,
-              balanceXrp: balanceXrp,
+              balanceXrp: totalBalance,
+              xrplBalance: balanceXrp,
+              simulatedBalance: simulatedBalance,
               sequence: sequence,
               createdAt: wallet.created_at,
               verifiedAt: wallet.verified_at,
@@ -579,6 +624,21 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
           });
         } catch (statusErr) {
           console.error("Status check error:", statusErr);
+          // On error, fall back to simulated balance if available
+          if (simulatedBalance > 0) {
+            return res.json({
+              ok: true,
+              connected: true,
+              verified: !!wallet.is_verified,
+              wallet: {
+                address: wallet.wallet_address,
+                existsOnLedger: null,
+                balanceXrp: simulatedBalance,
+                simulated: true,
+                error: statusErr.message,
+              },
+            });
+          }
           return res.json({
             ok: true,
             connected: true,
@@ -943,20 +1003,53 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
 
     const deadline = Number(deadlineUnix);
     const nowUnix = Math.floor(Date.now() / 1000);
-    if (!Number.isFinite(deadline) || deadline <= nowUnix) {
+    const minDeadlineUnix = nowUnix + 60; // Require at least 1 minute in the future (buffer for processing)
+    
+    if (!Number.isFinite(deadline) || deadline <= 0) {
       return res.status(400).json({ 
-        error: "deadlineUnix must be a future timestamp" 
+        error: "Invalid deadlineUnix: must be a positive number" 
+      });
+    }
+    
+    if (deadline <= minDeadlineUnix) {
+      const minDate = new Date(minDeadlineUnix * 1000).toISOString();
+      const providedDate = new Date(deadline * 1000).toISOString();
+      return res.status(400).json({ 
+        error: `deadlineUnix must be at least 1 minute in the future. Provided: ${providedDate}, Minimum: ${minDate}` 
       });
     }
 
-    if (!process.env.PAYER_SEED) {
-      return res.status(500).json({ error: "Missing PAYER_SEED" });
+    // Get user's verified wallet from database
+    const userId = req.session.user?.id;
+    const userWalletData = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+        [userId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+
+    if (!userWalletData) {
+      return res.status(400).json({ 
+        error: "No verified wallet found. Please connect and verify your XRPL wallet first." 
+      });
     }
 
-    const clientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
+    // Decrypt and load user's wallet
+    let clientWallet;
+    try {
+      const seed = decryptSeed(userWalletData.encrypted_seed);
+      clientWallet = xrpl.Wallet.fromSeed(seed);
+    } catch (decryptErr) {
+      return res.status(500).json({ error: "Failed to load user wallet: " + decryptErr.message });
+    }
+
     client = await getClient();
 
-    const result = await createFreelancerEscrow({
+    const escrowResult = await createFreelancerEscrow({
       client,
       clientWallet,
       freelancerAddress: freelancerAddress.trim(),
@@ -965,29 +1058,33 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
       preimage: preimage || null,
     });
 
-    const txResult = result.result.result?.meta?.TransactionResult;
+    // createFreelancerEscrow returns { result, offerSequence, preimage, condition, deadlineUnix }
+    // where result is the submitAndWait result from createEscrow
+    // The submitAndWait result has a result property containing the transaction result
+    const { result, offerSequence, preimage: resultPreimage, condition, deadlineUnix: resultDeadline } = escrowResult;
+    const txResult = result?.result?.meta?.TransactionResult;
 
     if (txResult !== "tesSUCCESS") {
       return res.status(400).json({
         ok: false,
         txResult,
-        engine_result: result.result.result?.engine_result,
-        engine_result_message: result.result.result?.engine_result_message,
-        txHash: result.result.result?.hash,
-        error: result.result.result?.engine_result_message || `Transaction failed: ${txResult}`,
+        engine_result: result?.result?.engine_result,
+        engine_result_message: result?.result?.engine_result_message,
+        txHash: result?.result?.hash,
+        error: result?.result?.engine_result_message || `Transaction failed: ${txResult}`,
       });
     }
 
     return res.json({
       ok: true,
-      txHash: result.result.result?.hash,
-      offerSequence: result.offerSequence,
+      txHash: result?.result?.hash,
+      offerSequence,
       txResult,
       amountXrp: Number(amountXrp),
       freelancerAddress: freelancerAddress.trim(),
-      preimage: result.preimage, // Client saves this to release payment when satisfied
-      condition: result.condition, // Can be shared with freelancer for transparency
-      deadlineUnix: result.deadlineUnix,
+      preimage: resultPreimage, // Client saves this to release payment when satisfied
+      condition, // Can be shared with freelancer for transparency
+      deadlineUnix: resultDeadline,
       workflow: "freelancer_payment",
       instructions: {
         client: "Save the preimage securely. Provide it to release payment when work is satisfactory.",
@@ -1020,48 +1117,113 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
 app.get("/api/xlusd/balance", requireAuth, async (req, res) => {
   let client;
   try {
-    // Use PAYER_SEED account by default, or allow account address in query
+    const userId = req.session.user?.id;
     const accountAddress = req.query.address;
     
-    let address;
-    if (!accountAddress) {
-      if (!process.env.PAYER_SEED) {
-        return res.status(500).json({ error: "Missing PAYER_SEED or account address" });
+    // Calculate simulated balance from database (completed purchases - completed withdrawals)
+    const simulatedBalance = await new Promise((resolve, reject) => {
+      // Get sum of completed purchases
+      db.get(
+        `SELECT COALESCE(SUM(amount_xlusd), 0) as total_purchases 
+         FROM payments 
+         WHERE user_id = ? AND status = 'completed'`,
+        [userId],
+        (err, purchaseRow) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          // Get sum of completed withdrawals
+          db.get(
+            `SELECT COALESCE(SUM(amount_xlusd), 0) as total_withdrawals 
+             FROM withdrawals 
+             WHERE user_id = ? AND status IN ('completed', 'processing')`,
+            [userId],
+            (err2, withdrawalRow) => {
+              if (err2) {
+                reject(err2);
+                return;
+              }
+              
+              const purchases = purchaseRow?.total_purchases || 0;
+              const withdrawals = withdrawalRow?.total_withdrawals || 0;
+              const simulated = Math.max(0, purchases - withdrawals);
+              resolve(simulated);
+            }
+          );
+        }
+      );
+    });
+    
+    // Try to get real XRPL balance if address is provided or user has wallet
+    let xrplBalance = 0;
+    let address = accountAddress;
+    
+    // If no address provided, try to get user's wallet address
+    if (!address) {
+      const userWalletData = await new Promise((resolve, reject) => {
+        db.get(
+          "SELECT wallet_address FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+          [userId],
+          (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          }
+        );
+      });
+      
+      if (userWalletData) {
+        address = userWalletData.wallet_address;
+      } else if (process.env.PAYER_SEED) {
+        // Fallback to server wallet
+        const wallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
+        address = wallet.classicAddress;
       }
-      const wallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
-      address = wallet.classicAddress;
-    } else {
-      address = accountAddress;
     }
     
-    client = await getClient();
+    // Get XRPL balance if we have an address
+    if (address) {
+      try {
+        client = await getClient();
+        
+        const accountLines = await client.request({
+          command: "account_lines",
+          account: address,
+          ledger_index: "validated",
+        });
+
+        const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
+        const xlusdCurrency = "XLUSD";
+
+        const xlusdLine = accountLines.result.lines?.find(
+          (line) =>
+            line.currency === xlusdCurrency &&
+            line.account === xlusdIssuer
+        );
+
+        xrplBalance = xlusdLine ? parseFloat(xlusdLine.balance) : 0;
+      } catch (xrplErr) {
+        console.warn("Failed to get XRPL balance, using simulated balance only:", xrplErr.message);
+        // Continue with simulated balance only
+      }
+    }
     
-    // Get account lines (trustlines) to find XLUSD balance
-    const accountLines = await client.request({
-      command: "account_lines",
-      account: address,
-      ledger_index: "validated",
-    });
-
-    // XLUSD issuer - common testnet issuer, can be overridden via env
-    const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq"; // Default testnet issuer
+    // Total balance = XRPL balance + simulated balance
+    // In simulate mode, XRPL balance will be 0, so total = simulated
+    const totalBalance = xrplBalance + simulatedBalance;
+    
+    const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
     const xlusdCurrency = "XLUSD";
-
-    // Find XLUSD trustline
-    const xlusdLine = accountLines.result.lines?.find(
-      (line) =>
-        line.currency === xlusdCurrency &&
-        line.account === xlusdIssuer
-    );
-
-    const balance = xlusdLine ? parseFloat(xlusdLine.balance) : 0;
 
     return res.json({
       ok: true,
-      balance,
+      balance: totalBalance,
+      xrplBalance: xrplBalance,
+      simulatedBalance: simulatedBalance,
       currency: xlusdCurrency,
       issuer: xlusdIssuer,
-      account: address,
+      account: address || null,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
@@ -1085,37 +1247,93 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Invalid payment method" });
     }
 
-    // Get user's account address (for now, use PAYER_SEED, but ideally get from session)
-    if (!process.env.PAYER_SEED) {
-      return res.status(500).json({ error: "Missing PAYER_SEED" });
+    // Check if we're in test/fake payment mode
+    const testMode = process.env.TEST_MODE === "true" || process.env.FAKE_PAYMENTS === "true" || !process.env.STRIPE_SECRET_KEY;
+    // Simulate XLUSD if explicitly enabled, or if in test mode, or if PAYER_SEED is not set
+    const simulateXlusd = process.env.SIMULATE_XLUSD === "true" || 
+                          testMode || 
+                          (!process.env.XLUSD_ISSUER_SEED && !process.env.PAYER_SEED);
+
+    // Get user's verified wallet from database (optional in simulate mode)
+    const userWalletData = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+        [userId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+
+    let userWallet = null;
+    let recipientAddress = null;
+
+    // In simulate mode, wallet is optional
+    if (!userWalletData && !simulateXlusd) {
+      return res.status(400).json({ 
+        error: "No verified wallet found. Please connect and verify your XRPL wallet first." 
+      });
     }
 
-    const recipientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
-    const recipientAddress = recipientWallet.classicAddress;
+    // If wallet exists, decrypt and load it
+    if (userWalletData) {
+      try {
+        const seed = decryptSeed(userWalletData.encrypted_seed);
+        userWallet = xrpl.Wallet.fromSeed(seed);
+        recipientAddress = userWallet.classicAddress;
+      } catch (decryptErr) {
+        if (!simulateXlusd) {
+          return res.status(500).json({ error: "Failed to load user wallet: " + decryptErr.message });
+        }
+        // In simulate mode, continue without wallet
+        console.warn("Failed to load wallet, but continuing in simulate mode:", decryptErr.message);
+      }
+    }
 
     const amountUsd = Number(amountXlusd) * 1.0; // $1 per XLUSD
     let paymentId;
     let paymentStatus = "pending";
+    let paymentRecordId;
 
     // Record payment in database
-    db.run(
-      `INSERT INTO payments (user_id, amount_xlusd, amount_usd, payment_method, status) 
-       VALUES (?, ?, ?, ?, ?)`,
-      [userId, amountXlusd, amountUsd, paymentMethod, "pending"],
-      function (err) {
-        if (err) {
-          console.error("Failed to record payment:", err);
+    await new Promise((resolve, reject) => {
+      db.run(
+        `INSERT INTO payments (user_id, amount_xlusd, amount_usd, payment_method, status) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [userId, amountXlusd, amountUsd, paymentMethod, "pending"],
+        function (err) {
+          if (err) {
+            console.error("Failed to record payment:", err);
+            reject(err);
+          } else {
+            paymentRecordId = this.lastID;
+            resolve();
+          }
         }
-      }
-    );
+      );
+    });
 
     if (paymentMethod === "creditcard") {
-      if (!cardDetails) {
-        return res.status(400).json({ error: "Card details required" });
+      // Card details are optional if:
+      // 1. Test mode is enabled, OR
+      // 2. Stripe is not configured, OR
+      // 3. Card details are not provided (will use fake payment)
+      const hasStripe = process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.trim() !== "";
+      const cardDetailsRequired = hasStripe && !testMode;
+      
+      if (cardDetailsRequired && !cardDetails) {
+        return res.status(400).json({ 
+          error: "Card details required when Stripe is configured. " +
+                 "Set TEST_MODE=true or remove STRIPE_SECRET_KEY to use test mode." 
+        });
       }
+      
+      // If no card details and we're in test mode, that's fine - will use fake payment
+      console.log(`Card payment: testMode=${testMode}, hasStripe=${hasStripe}, hasCardDetails=${!!cardDetails}`);
 
-      // Stripe integration (if STRIPE_SECRET_KEY is set)
-      if (process.env.STRIPE_SECRET_KEY) {
+      // Stripe integration (if STRIPE_SECRET_KEY is set and not in test mode)
+      if (process.env.STRIPE_SECRET_KEY && !testMode) {
         try {
           // Dynamic import for Stripe (ES module compatible)
           const stripeModule = await import("stripe");
@@ -1152,24 +1370,31 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
         } catch (stripeErr) {
           console.error("Stripe error:", stripeErr);
           // Fall back to simulated payment for development
+          console.log("⚠️  Stripe error occurred. Using simulated payment.");
           paymentId = `cc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           paymentStatus = "completed";
         }
       } else {
-        // Simulated payment for development
-        console.log("⚠️  Stripe not configured. Using simulated payment.");
-        paymentId = `cc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Simulated payment for development/test mode
+        console.log("💰 TEST MODE: Using fake payment (no real money charged)");
+        paymentId = `cc_test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         paymentStatus = "completed";
       }
       
     } else if (paymentMethod === "paynow") {
-      if (!paynowRef) {
+      // In test mode, paynowRef is optional
+      if (!testMode && !paynowRef) {
         return res.status(400).json({ error: "PayNow reference required" });
       }
       
       // PayNow integration would go here
-      // For now, simulate payment
-      paymentId = `pn_${paynowRef}`;
+      // In test mode, simulate payment
+      if (testMode) {
+        console.log("💰 TEST MODE: Using fake PayNow payment (no real money charged)");
+        paymentId = `pn_test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      } else {
+        paymentId = `pn_${paynowRef || Date.now()}`;
+      }
       paymentStatus = "completed";
       
       // TODO: Verify PayNow payment via API
@@ -1178,21 +1403,117 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
 
     if (paymentStatus !== "completed") {
       // Update payment status to failed
-      db.run(
-        `UPDATE payments SET status = 'failed' WHERE payment_id = ?`,
-        [paymentId]
-      );
+      if (paymentRecordId) {
+        db.run(
+          `UPDATE payments SET status = 'failed', payment_id = ? WHERE id = ?`,
+          [paymentId || null, paymentRecordId]
+        );
+      }
       return res.status(400).json({ error: "Payment processing failed" });
     }
 
     // After payment is confirmed, mint/transfer XLUSD to user's account
+    // In simulate mode, just record in database without XRPL transaction
+    if (simulateXlusd) {
+      console.log("💰 SIMULATE MODE: Recording XLUSD purchase in database (no XRPL transaction)");
+      console.log(`   Amount: ${amountXlusd} XLUSD, User: ${userId}, Wallet: ${recipientAddress || 'none (simulated)'}`);
+      
+      // Update payment record with success - await to ensure it completes
+      if (paymentRecordId) {
+        await new Promise((resolve, reject) => {
+          db.run(
+            `UPDATE payments SET status = 'completed', payment_id = ? WHERE id = ?`,
+            [paymentId, paymentRecordId],
+            function(err) {
+              if (err) {
+                console.error("Failed to update payment status:", err);
+                reject(err);
+              } else {
+                console.log(`✅ Payment ${paymentRecordId} marked as completed`);
+                resolve();
+              }
+            }
+          );
+        });
+      }
+      
+      // Update simulated XRP balance (add XLUSD amount as XRP for testing)
+      // In real scenario, buying XLUSD doesn't give XRP, but for testing we'll simulate this
+      if (userWalletData) {
+        await new Promise((resolve, reject) => {
+          db.run(
+            `UPDATE user_wallets 
+             SET simulated_balance_xrp = COALESCE(simulated_balance_xrp, 0) + ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = ?`,
+            [Number(amountXlusd), userId],
+            function(err) {
+              if (err) {
+                console.error("Failed to update simulated XRP balance:", err);
+                // Don't reject - this is optional
+              } else {
+                console.log(`✅ Updated simulated XRP balance: +${amountXlusd} XRP`);
+              }
+              resolve(); // Always resolve - this is optional
+            }
+          );
+        });
+      } else {
+        // If no wallet, create a simulated balance entry
+        // We can't update user_wallets without a wallet, so we'll skip this
+        console.log("⚠️  No wallet connected - cannot update simulated XRP balance");
+      }
+      
+      return res.json({
+        ok: true,
+        txHash: `simulated_${Date.now()}`,
+        txResult: "tesSUCCESS",
+        amountXlusd: Number(amountXlusd),
+        paymentId,
+        paymentMethod,
+        simulated: true,
+        message: "XLUSD purchase recorded (simulated mode - no XRPL transaction)",
+      });
+    }
+    
+    // Real XRPL mode requires wallet
+    if (!userWallet || !recipientAddress) {
+      return res.status(400).json({ 
+        error: "Wallet required for real XRPL transactions. Set SIMULATE_XLUSD=true to use test mode." 
+      });
+    }
+    
+    // Real XRPL transaction mode
     client = await getClient();
     
     const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
     const xlusdCurrency = "XLUSD";
-    const issuerWallet = xrpl.Wallet.fromSeed(process.env.XLUSD_ISSUER_SEED || process.env.PAYER_SEED);
+    
+    // Get issuer wallet - issuer must be configured
+    if (!process.env.XLUSD_ISSUER_SEED && !process.env.PAYER_SEED) {
+      return res.status(500).json({ 
+        error: "Missing XLUSD_ISSUER_SEED or PAYER_SEED. Cannot mint XLUSD. " +
+               "Set SIMULATE_XLUSD=true in .env to use test mode without XRPL transactions." 
+      });
+    }
+    
+    let issuerWallet;
+    try {
+      issuerWallet = xrpl.Wallet.fromSeed(process.env.XLUSD_ISSUER_SEED || process.env.PAYER_SEED);
+    } catch (seedErr) {
+      return res.status(500).json({ 
+        error: `Invalid issuer seed: ${seedErr.message}. ` +
+               "Set SIMULATE_XLUSD=true in .env to use test mode without XRPL transactions." 
+      });
+    }
+    
+    // Verify issuer wallet matches configured issuer address (if both are set)
+    if (process.env.XLUSD_ISSUER_SEED && issuerWallet.classicAddress !== xlusdIssuer) {
+      console.warn(`⚠️  Warning: Issuer wallet address (${issuerWallet.classicAddress}) doesn't match XLUSD_ISSUER (${xlusdIssuer})`);
+      // Still proceed - might be intentional for testing
+    }
 
-    // Check if recipient has trustline, if not, create it first
+    // Check if user's account has trustline, if not, create it first
     const accountLines = await client.request({
       command: "account_lines",
       account: recipientAddress,
@@ -1204,7 +1525,7 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     );
 
     if (!hasTrustline) {
-      // Create trustline
+      // Create trustline using user's wallet (required for receiving XLUSD)
       const trustlineTx = {
         TransactionType: "TrustSet",
         Account: recipientAddress,
@@ -1216,11 +1537,32 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
       };
 
       const preparedTrustline = await client.autofill(trustlineTx);
-      const signedTrustline = recipientWallet.sign(preparedTrustline);
-      await client.submitAndWait(signedTrustline.tx_blob);
+      const signedTrustline = userWallet.sign(preparedTrustline);
+      const trustlineResult = await client.submitAndWait(signedTrustline.tx_blob);
+      
+      const trustlineTxResult = trustlineResult.result?.meta?.TransactionResult;
+      if (trustlineTxResult !== "tesSUCCESS") {
+        const errorMsg = trustlineResult.result?.engine_result_message || `Transaction failed: ${trustlineTxResult}`;
+        console.error("Trustline creation failed:", {
+          txResult: trustlineTxResult,
+          engine_result: trustlineResult.result?.engine_result,
+          engine_result_message: errorMsg,
+          account: recipientAddress,
+        });
+        
+        return res.status(400).json({
+          ok: false,
+          error: `Failed to create trustline for XLUSD: ${errorMsg}`,
+          txResult: trustlineTxResult,
+          engine_result: trustlineResult.result?.engine_result,
+          engine_result_message: errorMsg,
+          hint: "Make sure your wallet has enough XRP for the trustline transaction fee (usually ~12 XRP reserve + fee). " +
+                "Set SIMULATE_XLUSD=true in .env to use test mode without XRPL transactions.",
+        });
+      }
     }
 
-    // Send XLUSD payment from issuer to recipient
+    // Send XLUSD payment from issuer to user's account
     const paymentTx = {
       TransactionType: "Payment",
       Account: issuerWallet.classicAddress,
@@ -1239,22 +1581,35 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     const txResult = result.result?.meta?.TransactionResult;
 
     if (txResult !== "tesSUCCESS") {
-      return res.status(400).json({
-        ok: false,
-        error: "Failed to transfer XLUSD",
+      const errorMsg = result.result?.engine_result_message || `Transaction failed: ${txResult}`;
+      console.error("XLUSD transfer failed:", {
         txResult,
         engine_result: result.result?.engine_result,
-        engine_result_message: result.result?.engine_result_message,
+        engine_result_message: errorMsg,
+        issuer: issuerWallet.classicAddress,
+        recipient: recipientAddress,
+        amount: amountXlusd,
+      });
+      
+      return res.status(400).json({
+        ok: false,
+        error: `Failed to transfer XLUSD: ${errorMsg}`,
+        txResult,
+        engine_result: result.result?.engine_result,
+        engine_result_message: errorMsg,
         txHash: result.result?.hash,
+        hint: "Make sure the issuer wallet has XLUSD to send and enough XRP for fees. " +
+              "Set SIMULATE_XLUSD=true in .env to use test mode without XRPL transactions.",
       });
     }
 
     // Update payment record with success
-    db.run(
-      `UPDATE payments SET status = 'completed', payment_id = ?, tx_hash = ? 
-       WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1`,
-      [paymentId, result.result?.hash, userId]
-    );
+    if (paymentRecordId) {
+      db.run(
+        `UPDATE payments SET status = 'completed', payment_id = ?, tx_hash = ? WHERE id = ?`,
+        [paymentId, result.result?.hash, paymentRecordId]
+      );
+    }
 
     return res.json({
       ok: true,
@@ -1550,13 +1905,95 @@ app.post("/api/xlusd/buy", requireAuth, async (req, res) => {
 // GET TRANSACTION HISTORY
 app.get("/api/history", requireAuth, async (req, res) => {
   try {
+    const userId = req.session.user?.id;
     const limit = parseInt(req.query.limit) || 50;
     
-    // In a real app, this would query a database
-    // For now, return mock data
-    const history = [
-      // Mock history entries
-    ];
+    // Get payments and withdrawals from database
+    const history = await new Promise((resolve, reject) => {
+      // Get payments
+      db.all(
+        `SELECT 
+          id, 
+          amount_xlusd, 
+          amount_usd, 
+          payment_method as method,
+          payment_id,
+          status,
+          tx_hash,
+          created_at,
+          'purchase' as type
+         FROM payments 
+         WHERE user_id = ? 
+         ORDER BY created_at DESC 
+         LIMIT ?`,
+        [userId, limit],
+        (err, paymentRows) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          // Get withdrawals
+          db.all(
+            `SELECT 
+              id, 
+              amount_xlusd, 
+              amount_usd, 
+              withdrawal_method as method,
+              status,
+              tx_hash,
+              created_at,
+              'withdrawal' as type
+             FROM withdrawals 
+             WHERE user_id = ? 
+             ORDER BY created_at DESC 
+             LIMIT ?`,
+            [userId, limit],
+            (err2, withdrawalRows) => {
+              if (err2) {
+                reject(err2);
+                return;
+              }
+              
+              // Combine and sort by date
+              const all = [
+                ...paymentRows.map(row => ({
+                  id: row.id,
+                  type: 'purchase',
+                  amount: row.amount_xlusd,
+                  amountUsd: row.amount_usd,
+                  method: row.method,
+                  status: row.status || 'pending',
+                  txHash: row.tx_hash,
+                  paymentId: row.payment_id,
+                  timestamp: new Date(row.created_at).getTime() / 1000,
+                  date: row.created_at,
+                })),
+                ...withdrawalRows.map(row => ({
+                  id: row.id,
+                  type: 'withdrawal',
+                  amount: row.amount_xlusd,
+                  amountUsd: row.amount_usd,
+                  method: row.method,
+                  status: row.status || 'pending',
+                  txHash: row.tx_hash,
+                  timestamp: new Date(row.created_at).getTime() / 1000,
+                  date: row.created_at,
+                }))
+              ];
+              
+              // Sort by timestamp descending
+              all.sort((a, b) => b.timestamp - a.timestamp);
+              
+              console.log(`History for user ${userId}: ${paymentRows.length} payments, ${withdrawalRows.length} withdrawals`);
+              console.log(`Payment statuses:`, paymentRows.map(r => ({ id: r.id, status: r.status, amount: r.amount_xlusd })));
+              
+              resolve(all.slice(0, limit));
+            }
+          );
+        }
+      );
+    });
 
     return res.json({
       ok: true,
@@ -1564,6 +2001,7 @@ app.get("/api/history", requireAuth, async (req, res) => {
       total: history.length,
     });
   } catch (err) {
+    console.error("History error:", err);
     return res.status(500).json({ error: err.message || String(err) });
   }
 });

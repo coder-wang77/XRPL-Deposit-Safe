@@ -101,7 +101,11 @@
 
           <!-- Credit Card Form -->
           <div class="payment-form active" id="creditcard-form">
-            <label for="cardNumber">Card Number</label>
+            <div style="background: #f0f0f0; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; color: #666;">
+              💡 <strong>Test Mode:</strong> Leave card details empty to use fake payment (no real money charged). 
+              XLUSD will be simulated (recorded in database without XRPL transaction) if PAYER_SEED is not configured.
+            </div>
+            <label for="cardNumber">Card Number (optional in test mode)</label>
             <input 
               type="text" 
               id="cardNumber" 

@@ -178,35 +178,70 @@ async function loadRecentActivity() {
 
     if (res.ok) {
       const data = await res.json();
+      console.log("History response:", data);
+      
       if (data.history && data.history.length > 0) {
-        activityList.innerHTML = data.history.map(tx => `
+        console.log(`Displaying ${data.history.length} history items`);
+        activityList.innerHTML = data.history.map(tx => {
+          const timestamp = tx.timestamp || tx.date;
+          const formattedDate = formatDate(timestamp);
+          const status = tx.status || 'pending';
+          
+          return `
           <div class="activity-item">
             <div class="activity-icon">${getActivityIcon(tx.type)}</div>
             <div class="activity-content">
-              <div class="activity-title">${getActivityTitle(tx.type)}</div>
-              <div class="activity-meta">${formatDate(tx.timestamp)}</div>
+              <div class="activity-title">${getActivityTitle(tx)}</div>
+              <div class="activity-meta">${formattedDate}</div>
             </div>
-            <div class="activity-status ${tx.status}">${tx.status}</div>
+            <div class="activity-status ${status}">${status}</div>
           </div>
-        `).join("");
+        `;
+        }).join("");
       } else {
+        console.log("No history items returned");
         activityList.innerHTML = '<div class="activity-empty">No recent activity</div>';
       }
     } else {
+      const errorText = await res.text();
+      console.error("History API error:", res.status, errorText);
       activityList.innerHTML = '<div class="activity-empty">No recent activity</div>';
     }
   } catch (err) {
+    console.error("Failed to load recent activity:", err);
     activityList.innerHTML = '<div class="activity-empty">No recent activity</div>';
   }
 }
 
 function getActivityIcon(type) {
-  const icons = { create: "📦", finish: "✅", cancel: "❌", purchase: "💰" };
+  const icons = { 
+    create: "📦", 
+    finish: "✅", 
+    cancel: "❌", 
+    purchase: "💰",
+    withdrawal: "💸"
+  };
   return icons[type] || "📝";
 }
 
-function getActivityTitle(type) {
-  const titles = { create: "Escrow Created", finish: "Escrow Finished", cancel: "Escrow Cancelled", purchase: "XLUSD Purchased" };
+function getActivityTitle(tx) {
+  if (typeof tx === 'object' && tx.type) {
+    if (tx.type === 'purchase') {
+      return `XLUSD Purchased: ${tx.amount} XLUSD`;
+    } else if (tx.type === 'withdrawal') {
+      return `XLUSD Withdrawn: ${tx.amount} XLUSD`;
+    }
+  }
+  
+  // Fallback for old format
+  const type = typeof tx === 'string' ? tx : tx?.type;
+  const titles = { 
+    create: "Escrow Created", 
+    finish: "Escrow Finished", 
+    cancel: "Escrow Cancelled", 
+    purchase: "XLUSD Purchased",
+    withdrawal: "XLUSD Withdrawn"
+  };
   return titles[type] || "Transaction";
 }
 
@@ -264,6 +299,20 @@ async function loadXLUSDBalance() {
 loadXLUSDBalance();
 setInterval(loadXLUSDBalance, 10000);
 
+// Refresh balance and activity when page becomes visible (e.g., after returning from buy page)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadXLUSDBalance();
+    loadRecentActivity();
+  }
+});
+
+// Also refresh on page focus
+window.addEventListener('focus', () => {
+  loadXLUSDBalance();
+  loadRecentActivity();
+});
+
 // Buy XLUSD button handler - navigate to payment page
 buyBtn.addEventListener("click", () => {
   window.location.href = "buy-xlusd.html";
@@ -290,8 +339,13 @@ const resFreelancerRelease = document.getElementById("resFreelancerRelease");
 // Store preimage when escrow is created
 let savedPreimages = {}; // {sequence: preimage}
 
-// Set minimum datetime for deadline
-fDeadlineInput.min = new Date().toISOString().slice(0, 16);
+// Set minimum datetime for deadline (5 minutes from now)
+const minDeadline = new Date(Date.now() + 5 * 60 * 1000);
+fDeadlineInput.min = minDeadline.toISOString().slice(0, 16);
+
+// Set default deadline to 1 hour from now
+const defaultDeadline = new Date(Date.now() + 60 * 60 * 1000);
+fDeadlineInput.value = defaultDeadline.toISOString().slice(0, 16);
 
 // Address validation
 freelancerInput.addEventListener("blur", () => {
@@ -366,8 +420,18 @@ btnFreelancerCreate.addEventListener("click", async () => {
   }
 
   const deadlineUnix = toUnixSeconds(deadlineLocal);
-  if (!deadlineUnix || deadlineUnix <= Math.floor(Date.now() / 1000)) {
-    show(resFreelancerCreate, false, "❌ Deadline must be in the future");
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const minDeadlineUnix = nowUnix + 300; // Require at least 5 minutes in the future
+  
+  if (!deadlineUnix) {
+    show(resFreelancerCreate, false, "❌ Invalid deadline format");
+    fDeadlineInput.focus();
+    return;
+  }
+  
+  if (deadlineUnix <= minDeadlineUnix) {
+    const minDate = new Date(minDeadlineUnix * 1000).toLocaleString();
+    show(resFreelancerCreate, false, `❌ Deadline must be at least 5 minutes in the future.\nMinimum: ${minDate}`);
     fDeadlineInput.focus();
     return;
   }

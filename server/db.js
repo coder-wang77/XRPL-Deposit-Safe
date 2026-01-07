@@ -57,10 +57,19 @@ db.run(`
     encrypted_seed TEXT NOT NULL,
     is_verified INTEGER DEFAULT 0,
     verified_at DATETIME,
+    simulated_balance_xrp REAL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `);
+
+// Add simulated_balance_xrp column if it doesn't exist (for existing databases)
+db.run(`ALTER TABLE user_wallets ADD COLUMN simulated_balance_xrp REAL DEFAULT 0`, (err) => {
+  // Ignore error if column already exists
+  if (err && !err.message.includes('duplicate column')) {
+    console.warn("Could not add simulated_balance_xrp column:", err.message);
+  }
+});
 
 export default db;

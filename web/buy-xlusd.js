@@ -107,31 +107,50 @@ processBtn.addEventListener("click", async () => {
     };
 
     if (currentPaymentMethod === "creditcard") {
-      const cardNumber = document.getElementById("cardNumber").value.replace(/\s/g, "");
-      const expiry = document.getElementById("expiry").value;
-      const cvv = document.getElementById("cvv").value;
-      const cardName = document.getElementById("cardName").value;
-      const billingEmail = document.getElementById("billingEmail").value;
+      const cardNumber = document.getElementById("cardNumber").value.replace(/\s/g, "").trim();
+      const expiry = document.getElementById("expiry").value.trim();
+      const cvv = document.getElementById("cvv").value.trim();
+      const cardName = document.getElementById("cardName").value.trim();
+      const billingEmail = document.getElementById("billingEmail").value.trim();
 
-      if (!cardNumber || !expiry || !cvv || !cardName || !billingEmail) {
-        showResult(false, "Please fill in all credit card details");
+      // Card details are optional in test mode
+      // If any card field has a value, all must be filled
+      const hasAnyCardField = cardNumber || expiry || cvv || cardName || billingEmail;
+      const hasAllCardFields = cardNumber && expiry && cvv && cardName && billingEmail;
+      
+      if (hasAnyCardField && !hasAllCardFields) {
+        showResult(false, "Please fill in all credit card details, or leave all fields empty for test mode");
         processBtn.disabled = false;
         processBtn.textContent = "Process Payment";
         return;
       }
-
-      paymentData.cardDetails = {
-        number: cardNumber,
-        expiry,
-        cvv,
-        name: cardName,
-        email: billingEmail,
-      };
+      
+      // Only include cardDetails if all fields are provided
+      if (hasAllCardFields) {
+        paymentData.cardDetails = {
+          number: cardNumber,
+          expiry,
+          cvv,
+          name: cardName,
+          email: billingEmail,
+        };
+        console.log("Card details provided - will attempt real payment if Stripe is configured");
+      } else {
+        // No card details provided - backend will use fake payment
+        console.log("No card details provided - using test/fake payment mode");
+        // Explicitly don't include cardDetails in the request
+      }
     } else if (currentPaymentMethod === "paynow") {
       const ref = document.getElementById("paynowRef").textContent;
       paymentData.paynowRef = ref;
     }
 
+    console.log("Sending purchase request:", { 
+      amountXlusd: amount, 
+      paymentMethod: currentPaymentMethod,
+      hasCardDetails: !!paymentData.cardDetails 
+    });
+    
     const res = await fetch(`${API}/api/xlusd/purchase`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -140,28 +159,44 @@ processBtn.addEventListener("click", async () => {
     });
 
     const data = await res.json();
+    console.log("Purchase response:", data);
 
     if (!res.ok || !data.ok) {
+      const errorMsg = data.error || data.message || "Unknown error";
+      const hint = data.hint ? `\n\n💡 Hint: ${data.hint}` : "";
       showResult(
         false,
-        `Payment failed: ${data.error || data.message || "Unknown error"}`
+        `❌ Payment failed: ${errorMsg}${hint}`
       );
     } else {
+      const isTestPayment = data.paymentId?.includes("_test_") || data.paymentId?.startsWith("cc_test") || data.paymentId?.startsWith("pn_test");
+      const isSimulated = data.simulated === true;
+      
+      let paymentNote = "";
+      if (isSimulated) {
+        paymentNote = "\n💰 Simulated Mode: XLUSD recorded in database (no XRPL transaction)";
+      } else if (isTestPayment) {
+        paymentNote = "\n💰 Test Mode: Fake payment used (no real money charged)";
+      }
+      
       showResult(
         true,
         `✅ Payment successful!\n` +
         `You received ${data.amountXlusd} XLUSD\n` +
         `Transaction ID: ${data.txHash || data.paymentId}\n` +
-        `Redirecting to dashboard...`
+        paymentNote +
+        (data.message ? `\n${data.message}` : "") +
+        `\nRedirecting to dashboard...`
       );
       
-      // Redirect to dashboard after 3 seconds
+      // Redirect to dashboard after 2 seconds (give time to see success message)
       setTimeout(() => {
         window.location.href = "dashboard.html";
-      }, 3000);
+      }, 2000);
     }
   } catch (err) {
-    showResult(false, "❌ Cannot reach backend. Is the server running?");
+    console.error("Purchase error:", err);
+    showResult(false, `❌ Cannot reach backend: ${err.message || "Unknown error"}\n\nMake sure the server is running at ${API}`);
   } finally {
     processBtn.disabled = false;
     processBtn.textContent = "Process Payment";
@@ -199,6 +234,19 @@ async function checkAuth() {
     if (sidebarUser) sidebarUser.textContent = email.split("@")[0];
     if (sidebarEmail) sidebarEmail.textContent = email;
     if (userInitial) userInitial.textContent = email.charAt(0).toUpperCase();
+    
+    // Check if user has a verified wallet (optional in test/simulate mode)
+    const wallet = data.wallet;
+    if (!wallet || !wallet.isVerified) {
+      // Show info message but don't disable - simulate mode doesn't need wallet
+      const infoMsg = "ℹ️  No verified wallet connected. " +
+        "You can still purchase XLUSD in test/simulate mode (will be recorded in database).\n\n" +
+        "For real XRPL transactions, connect your wallet in Settings.";
+      showResult(null, infoMsg);
+      // Keep button enabled - allow purchases in simulate mode
+      processBtn.disabled = false;
+      amountInput.disabled = false;
+    }
   } catch (e) {
     window.location.href = "index.html";
   }

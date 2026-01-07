@@ -1,5 +1,6 @@
 import xrpl from "xrpl";
 import crypto from "crypto";
+import cc from "five-bells-condition";
 
 // Connect to XRPL Testnet
 export async function getClient() {
@@ -21,25 +22,36 @@ export function generatePreimage() {
 }
 
 /**
- * Create a condition (SHA-256 hash) from a preimage
- * XRPL uses SHA-256 conditions in hex format
- * @param {string} preimage - Hex-encoded preimage
- * @returns {string} Hex-encoded condition
+ * Create a condition (PREIMAGE-SHA-256 crypto-condition) from a preimage
+ * XRPL requires conditions in the proper crypto-condition format
+ * @param {string} preimage - Hex-encoded preimage (32 bytes = 64 hex chars)
+ * @returns {string} Hex-encoded condition in PREIMAGE-SHA-256 format
  */
 export function createCondition(preimage) {
   if (!preimage || typeof preimage !== "string") {
     throw new Error("Preimage must be a non-empty string");
   }
   
-  // Remove any whitespace and convert to lowercase for hashing
+  // Remove any whitespace and convert to lowercase
   const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
   
-  // Convert hex string to buffer, hash it, and return hex
+  // Convert hex string to buffer
   const preimageBuffer = Buffer.from(cleanPreimage, "hex");
-  const hash = crypto.createHash("sha256").update(preimageBuffer).digest();
   
-  // Return as hex string (uppercase for XRPL compatibility)
-  return hash.toString("hex").toUpperCase();
+  // Validate preimage is 32 bytes (64 hex chars)
+  if (preimageBuffer.length !== 32) {
+    throw new Error(`Preimage must be exactly 32 bytes (64 hex characters). Got ${preimageBuffer.length} bytes.`);
+  }
+  
+  // Create PREIMAGE-SHA-256 fulfillment using five-bells-condition
+  const fulfillment = new cc.PreimageSha256();
+  fulfillment.setPreimage(preimageBuffer);
+  
+  // Get the condition in binary format and convert to hex
+  const conditionBinary = fulfillment.getConditionBinary();
+  const conditionHex = conditionBinary.toString("hex").toUpperCase();
+  
+  return conditionHex;
 }
 
 /**
@@ -49,10 +61,28 @@ export function createCondition(preimage) {
  * @returns {boolean} True if preimage matches condition
  */
 export function validatePreimage(preimage, condition) {
+  if (!preimage || !condition) return false;
+  
   try {
-    const computedCondition = createCondition(preimage);
-    return computedCondition.toUpperCase() === condition.toUpperCase();
-  } catch (err) {
+    // Create fulfillment from preimage
+    const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
+    const preimageBuffer = Buffer.from(cleanPreimage, "hex");
+    
+    if (preimageBuffer.length !== 32) {
+      return false;
+    }
+    
+    const fulfillment = new cc.PreimageSha256();
+    fulfillment.setPreimage(preimageBuffer);
+    
+    // Get condition from fulfillment
+    const computedCondition = fulfillment.getConditionBinary().toString("hex").toUpperCase();
+    
+    // Compare with provided condition (normalize both to uppercase, remove whitespace)
+    const cleanCondition = condition.toUpperCase().replace(/\s+/g, "");
+    return computedCondition === cleanCondition;
+  } catch (e) {
+    console.error("Preimage validation error:", e);
     return false;
   }
 }
@@ -61,12 +91,26 @@ export function validatePreimage(preimage, condition) {
  * Generate a condition-fulfillment pair for conditional escrow
  * Useful for applications where you want to create the condition now
  * but provide the fulfillment later (e.g., hotel booking confirmation)
- * @returns {{preimage: string, condition: string}}
+ * @returns {{preimage: string, condition: string, fulfillment: string}}
  */
 export function generateConditionPair() {
-  const preimage = generatePreimage();
-  const condition = createCondition(preimage);
-  return { preimage, condition };
+  // Generate random 32-byte preimage
+  const preimageData = crypto.randomBytes(32);
+  const preimage = preimageData.toString("hex").toUpperCase();
+  
+  // Create fulfillment using five-bells-condition
+  const fulfillment = new cc.PreimageSha256();
+  fulfillment.setPreimage(preimageData);
+  
+  // Get condition in proper format
+  const conditionBinary = fulfillment.getConditionBinary();
+  const condition = conditionBinary.toString("hex").toUpperCase();
+  
+  // Get fulfillment hex (for finishing escrow)
+  const fulfillmentBinary = fulfillment.serializeBinary();
+  const fulfillmentHex = fulfillmentBinary.toString("hex").toUpperCase();
+  
+  return { preimage, condition, fulfillment: fulfillmentHex };
 }
 
 // Convert XRP -> drops (XRPL uses drops in tx fields)
@@ -160,10 +204,12 @@ export async function createEscrow({
   }
 
   const nowUnix = Math.floor(Date.now() / 1000);
-  if (finish <= nowUnix) {
+  const minFinishUnix = nowUnix + 60; // Require at least 1 minute in the future (buffer)
+  
+  if (finish <= minFinishUnix) {
     throw new Error(
-      `finishAfterUnix must be in the future. Provided: ${new Date(finish * 1000).toISOString()}, ` +
-      `Current time: ${new Date(nowUnix * 1000).toISOString()}`
+      `finishAfterUnix must be at least 1 minute in the future. Provided: ${new Date(finish * 1000).toISOString()}, ` +
+      `Current time: ${new Date(nowUnix * 1000).toISOString()}, Minimum: ${new Date(minFinishUnix * 1000).toISOString()}`
     );
   }
 
@@ -212,37 +258,150 @@ export async function createEscrow({
       throw new Error("Condition must be a valid hex string");
     }
     
-    if (conditionHex.length < 32) {
-      throw new Error("Condition must be at least 32 hex characters (16 bytes)");
+    // XRPL PREIMAGE-SHA-256 conditions are longer than 64 chars (they include type info)
+    // The format is: A0258020[32-byte hash]810100
+    // Minimum length should be around 80+ characters for proper format
+    if (conditionHex.length < 64) {
+      throw new Error(
+        `Condition appears to be invalid. PREIMAGE-SHA-256 conditions are typically 80+ hex characters. ` +
+        `Got ${conditionHex.length} characters: ${conditionHex.substring(0, 20)}...`
+      );
     }
   }
 
   // Build the EscrowCreate transaction
+  const finishRippleTime = toRippleTime(finish);
+  const cancelRippleTime = cancel ? toRippleTime(cancel) : null;
+  
+  // Validate ripple times are positive
+  if (finishRippleTime <= 0) {
+    throw new Error(`Invalid FinishAfter ripple time: ${finishRippleTime}. Unix: ${finish}, Ripple: ${finishRippleTime}`);
+  }
+  
+  if (cancelRippleTime !== null && cancelRippleTime <= 0) {
+    throw new Error(`Invalid CancelAfter ripple time: ${cancelRippleTime}. Unix: ${cancel}, Ripple: ${cancelRippleTime}`);
+  }
+  
+  // Build transaction - ensure all fields are correct types
   const tx = {
     TransactionType: "EscrowCreate",
     Account: payerWallet.classicAddress,
     Destination: payeeAddress,
-    Amount: xrpToDrops(amount),
-    FinishAfter: toRippleTime(finish),
+    Amount: xrpToDrops(amount), // Must be string in drops
+    FinishAfter: Number(finishRippleTime), // Must be number (ripple epoch seconds)
   };
 
-  if (cancel) {
-    tx.CancelAfter = toRippleTime(cancel);
+  if (cancelRippleTime) {
+    tx.CancelAfter = Number(cancelRippleTime); // Must be number (ripple epoch seconds)
   }
 
   // Add Condition field for conditional escrow
+  // XRPL requires Condition in PREIMAGE-SHA-256 crypto-condition format
+  // This format is longer than 64 chars (includes type information)
   if (conditionHex) {
+    // PREIMAGE-SHA-256 conditions from five-bells-condition are typically 80+ hex chars
+    // Format: A0258020[32-byte hash]810100
+    if (conditionHex.length < 64) {
+      throw new Error(
+        `Condition appears to be invalid. PREIMAGE-SHA-256 conditions are typically 80+ hex characters. ` +
+        `Got ${conditionHex.length} characters: ${conditionHex.substring(0, 20)}...`
+      );
+    }
+    
+    // XRPL expects the condition as a hex string
     tx.Condition = conditionHex;
   }
 
+  // Log transaction for debugging
+  console.log("EscrowCreate transaction:", JSON.stringify({
+    TransactionType: tx.TransactionType,
+    Account: tx.Account,
+    Destination: tx.Destination,
+    Amount: tx.Amount,
+    AmountType: typeof tx.Amount,
+    FinishAfter: tx.FinishAfter,
+    FinishAfterType: typeof tx.FinishAfter,
+    CancelAfter: tx.CancelAfter || 'none',
+    CancelAfterType: tx.CancelAfter ? typeof tx.CancelAfter : 'none',
+    Condition: conditionHex ? `${conditionHex.substring(0, 16)}...` : 'none',
+    ConditionLength: conditionHex ? conditionHex.length : 0,
+  }, null, 2));
+
   // Autofill fee + sequence
-  const prepared = await client.autofill(tx);
+  let prepared;
+  try {
+    prepared = await client.autofill(tx);
+  } catch (autofillErr) {
+    console.error("Autofill error:", autofillErr);
+    throw new Error(`Failed to prepare transaction: ${autofillErr.message}`);
+  }
 
   // Sign with payer
-  const signed = payerWallet.sign(prepared);
+  let signed;
+  try {
+    signed = payerWallet.sign(prepared);
+  } catch (signErr) {
+    console.error("Sign error:", signErr);
+    throw new Error(`Failed to sign transaction: ${signErr.message}`);
+  }
 
   // Submit and wait for validation
-  const result = await client.submitAndWait(signed.tx_blob);
+  let result;
+  try {
+    result = await client.submitAndWait(signed.tx_blob);
+  } catch (submitErr) {
+    // XRPL client errors have different structures - try to extract all possible error info
+    console.error("Submit error - full details:", {
+      message: submitErr.message,
+      name: submitErr.name,
+      data: submitErr.data,
+      result: submitErr.result,
+      response: submitErr.response,
+      request: submitErr.request,
+      // Try to get all properties
+      allProps: Object.getOwnPropertyNames(submitErr).reduce((acc, key) => {
+        try {
+          acc[key] = submitErr[key];
+        } catch (e) {
+          acc[key] = '[unable to serialize]';
+        }
+        return acc;
+      }, {})
+    });
+    
+    // Try to extract error from different possible locations
+    let txResult, engineResult, engineMsg, errorCode;
+    
+    if (submitErr.data) {
+      txResult = submitErr.data.meta?.TransactionResult;
+      engineResult = submitErr.data.engine_result;
+      engineMsg = submitErr.data.engine_result_message;
+      errorCode = submitErr.data.error_code;
+    } else if (submitErr.result) {
+      txResult = submitErr.result.meta?.TransactionResult;
+      engineResult = submitErr.result.engine_result;
+      engineMsg = submitErr.result.engine_result_message;
+      errorCode = submitErr.result.error_code;
+    }
+    
+    // Log what we found
+    console.error("Extracted XRPL error info:", {
+      txResult,
+      engineResult,
+      engineMsg,
+      errorCode,
+      hasData: !!submitErr.data,
+      hasResult: !!submitErr.result
+    });
+    
+    const errorMsg = engineMsg || submitErr.message || submitErr.toString();
+    const errorType = txResult || engineResult || 'Unknown error';
+    
+    throw new Error(
+      `Transaction failed: ${errorType}. ${errorMsg}${errorCode ? ` (Code: ${errorCode})` : ''}`
+    );
+  }
+  
   return { result, offerSequence: prepared.Sequence };
 }
 
@@ -270,22 +429,41 @@ export async function createFreelancerEscrow({
   // Generate condition-fulfillment pair if not provided
   let conditionPair;
   if (preimage) {
+    // If preimage is provided, create condition from it
     const condition = createCondition(preimage);
-    conditionPair = { preimage, condition };
+    // Also create fulfillment for later use
+    const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
+    const preimageBuffer = Buffer.from(cleanPreimage, "hex");
+    const fulfillment = new cc.PreimageSha256();
+    fulfillment.setPreimage(preimageBuffer);
+    const fulfillmentHex = fulfillment.serializeBinary().toString("hex").toUpperCase();
+    conditionPair = { preimage, condition, fulfillment: fulfillmentHex };
   } else {
     conditionPair = generateConditionPair();
   }
 
   // Create escrow with condition
-  // FinishAfter is set to deadline - this allows:
-  // 1. Client can finish early by providing fulfillment (when satisfied)
-  // 2. Auto-refund becomes available after deadline if condition not fulfilled
+  // For conditional escrows:
+  // - Client can finish anytime by providing fulfillment (condition)
+  // - FinishAfter is a fallback time (set to allow early finishing)
+  // - CancelAfter is the deadline (when auto-refund becomes available)
+  const nowUnix = Math.floor(Date.now() / 1000);
+  
+  // Set finishAfterUnix to 1 hour before deadline, but ensure:
+  // 1. It's at least 1 minute in the future (validation requirement)
+  // 2. It's at least 1 minute before deadline (so finishAfterUnix < cancelAfterUnix)
+  let finishAfterUnix = Math.max(nowUnix + 60, deadlineUnix - 3600);
+  // Ensure it's still less than the deadline
+  if (finishAfterUnix >= deadlineUnix) {
+    finishAfterUnix = deadlineUnix - 60; // At least 1 minute before deadline
+  }
+  
   const result = await createEscrow({
     client,
     payerWallet: clientWallet,
     payeeAddress: freelancerAddress,
     amountXrp,
-    finishAfterUnix: deadlineUnix, // Fallback time
+    finishAfterUnix: finishAfterUnix, // Fallback time (allows early finishing with condition)
     cancelAfterUnix: deadlineUnix, // Can refund after deadline
     condition: conditionPair.condition,
   });
@@ -345,15 +523,42 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
   }
 
   // If fulfillment is provided, validate it matches the condition
+  // Fulfillment can be either:
+  // 1. A preimage (hex string) - we'll convert it to fulfillment format
+  // 2. A serialized fulfillment (hex string) - use directly
+  let fulfillmentHex = null;
   if (hasCondition && fulfillment) {
-    const isValid = validatePreimage(fulfillment, escrow.Condition);
-    if (!isValid) {
-      throw new Error(
-        `Invalid fulfillment. The provided preimage does not match the escrow condition. ` +
-        `Expected condition: ${escrow.Condition.substring(0, 16)}...`
-      );
+    const cleanFulfillment = fulfillment.replace(/\s+/g, "").toLowerCase();
+    
+    // Check if it's a preimage (64 hex chars) or already a fulfillment (longer)
+    if (cleanFulfillment.length === 64) {
+      // It's a preimage - convert to fulfillment
+      try {
+        const preimageBuffer = Buffer.from(cleanFulfillment, "hex");
+        const fulfillmentObj = new cc.PreimageSha256();
+        fulfillmentObj.setPreimage(preimageBuffer);
+        fulfillmentHex = fulfillmentObj.serializeBinary().toString("hex").toUpperCase();
+        
+        // Validate it matches the condition
+        const computedCondition = fulfillmentObj.getConditionBinary().toString("hex").toUpperCase();
+        const escrowCondition = escrow.Condition.toUpperCase().replace(/\s+/g, "");
+        if (computedCondition !== escrowCondition) {
+          throw new Error(
+            `Invalid preimage. The provided preimage does not match the escrow condition. ` +
+            `Expected condition: ${escrow.Condition.substring(0, 16)}...`
+          );
+        }
+      } catch (err) {
+        throw new Error(
+          `Failed to create fulfillment from preimage: ${err.message}`
+        );
+      }
+      } else {
+        // Assume it's already a serialized fulfillment - use it directly
+        // XRPL will validate it when we submit
+        fulfillmentHex = cleanFulfillment.toUpperCase();
+      }
     }
-  }
 
   // 4) Enforce: FinishAfter has passed (if present)
   // For conditional escrows: FinishAfter is optional - fulfillment alone can finish it
@@ -394,8 +599,7 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
   };
 
   // Add Fulfillment field if condition exists and fulfillment is provided
-  if (hasCondition && fulfillment) {
-    const fulfillmentHex = fulfillment.replace(/\s+/g, "").toUpperCase();
+  if (hasCondition && fulfillmentHex) {
     if (!/^[0-9A-F]+$/i.test(fulfillmentHex)) {
       throw new Error("Fulfillment must be a valid hex string");
     }
