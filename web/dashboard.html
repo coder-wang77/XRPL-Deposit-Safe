@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <div class="topbar">
+      <div>
+        <h2>DepositSafe Dashboard</h2>
+        <p class="muted">Signed in as: <span id="who"></span></p>
+      </div>
+      <div class="topbar-actions">
+        <a class="link" href="index.html">Log out</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <!-- Make Deposit -->
+      <div class="card">
+        <h3>Flow A — Make Deposit (EscrowCreate)</h3>
+        <p class="muted">Payer locks XRP into escrow for a payee.</p>
+
+        <label>Payee XRPL Address</label>
+        <input id="a_payee" placeholder="r..." />
+
+        <label>Amount (XRP)</label>
+        <input id="a_amount" type="number" step="0.000001" placeholder="10" />
+
+        <label>Release time (FinishAfter)</label>
+        <input id="a_finish" type="datetime-local" />
+
+        <label>Cancel time (CancelAfter) — optional</label>
+        <input id="a_cancel" type="datetime-local" />
+
+        <button id="btnCreate">Create Escrow</button>
+
+        <div class="result" id="resCreate"></div>
+      </div>
+
+      <!-- Release -->
+      <div class="card">
+        <h3>Flow B — Release Deposit (EscrowFinish)</h3>
+        <p class="muted">Payee claims funds when FinishAfter passes.</p>
+
+        <label>Escrow Owner (Payer address)</label>
+        <input id="b_owner" placeholder="r..." />
+
+        <label>Escrow Sequence</label>
+        <input id="b_seq" type="number" placeholder="123" />
+
+        <button id="btnFinish">Claim Deposit</button>
+
+        <div class="result" id="resFinish"></div>
+      </div>
+
+      <!-- Cancel -->
+      <div class="card">
+        <h3>Flow C — Cancel & Refund (EscrowCancel)</h3>
+        <p class="muted">Payer cancels escrow after CancelAfter time.</p>
+
+        <label>Escrow Owner (Payer address)</label>
+        <input id="c_owner" placeholder="r..." />
+
+        <label>Escrow Sequence</label>
+        <input id="c_seq" type="number" placeholder="123" />
+
+        <button id="btnCancel">Cancel & Refund</button>
+
+        <div class="result" id="resCancel"></div>
+      </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>
