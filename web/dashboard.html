@@ -7,17 +7,117 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="page">
-    <div class="topbar">
-      <div>
-        <h2>DepositSafe Dashboard</h2>
-        <p class="muted">Signed in as: <span id="who"></span></p>
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
       </div>
-      <div class="topbar-actions">
-        <a class="link" href="index.html">Log out</a>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item active" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>Buy XLUSD</span>
+        </a>
+        <a href="withdraw.html" class="menu-item" data-page="withdraw">
+          <span class="menu-icon">💸</span>
+          <span>Withdraw</span>
+        </a>
+        <a href="profile.html" class="menu-item" data-page="profile">
+          <span class="menu-icon">👤</span>
+          <span>Profile</span>
+        </a>
       </div>
-    </div>
 
-    <div class="grid">
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Dashboard Overview</h2>
+          <p class="muted">Welcome back, <span id="who"></span></p>
+        </div>
+        <div class="topbar-actions">
+          <div class="balance-display">
+            <span class="balance-label">XLUSD Balance:</span>
+            <span class="balance-value" id="xlusdBalance">Loading...</span>
+          </div>
+          <button id="btnBuyXLUSD" class="btn-buy">💳 Buy XLUSD</button>
+        </div>
+      </div>
+
+      <!-- Statistics Cards -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">📦</div>
+          <div class="stat-content">
+            <div class="stat-label">Total Escrows</div>
+            <div class="stat-value" id="totalEscrows">0</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">💵</div>
+          <div class="stat-content">
+            <div class="stat-label">Total Value</div>
+            <div class="stat-value" id="totalValue">0 XRP</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">✅</div>
+          <div class="stat-content">
+            <div class="stat-label">Completed</div>
+            <div class="stat-value" id="completedCount">0</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">⏳</div>
+          <div class="stat-content">
+            <div class="stat-label">Pending</div>
+            <div class="stat-value" id="pendingCount">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="activity-card">
+        <div class="card-header">
+          <h3>Recent Activity</h3>
+          <a href="history.html" class="view-all">View All →</a>
+        </div>
+        <div class="activity-list" id="recentActivity">
+          <div class="activity-empty">No recent activity</div>
+        </div>
+      </div>
+
+      <div class="grid">
       <!-- Make Deposit -->
       <div class="card">
         <h3>Flow A — Make Deposit (EscrowCreate)</h3>

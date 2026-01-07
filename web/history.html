@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | History</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="history.html" class="menu-item active" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>Buy XLUSD</span>
+        </a>
+        <a href="profile.html" class="menu-item" data-page="profile">
+          <span class="menu-icon">👤</span>
+          <span>Profile</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Transaction History</h2>
+          <p class="muted">View all your escrow transactions</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="filter-group">
+            <select id="filterType" class="filter-select">
+              <option value="all">All Types</option>
+              <option value="create">Created</option>
+              <option value="finish">Finished</option>
+              <option value="cancel">Cancelled</option>
+            </select>
+            <select id="filterStatus" class="filter-select">
+              <option value="all">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="completed">Completed</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="history-container">
+        <div class="history-list" id="historyList">
+          <div class="loading-state">Loading history...</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="history.js"></script>
+  </body>
+</html>

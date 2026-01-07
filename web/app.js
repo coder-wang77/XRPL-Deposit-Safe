@@ -33,6 +33,8 @@ form.addEventListener("submit", async (e) => {
 
   const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;
+  const rememberMe = document.getElementById("rememberMe")?.checked || false;
+
 
   const endpoint = mode === "login" ? "/api/login" : "/api/signup";
 
@@ -41,7 +43,7 @@ form.addEventListener("submit", async (e) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include", // IMPORTANT (sessions)
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, rememberMe }),
     });
 
     const data = await res.json();

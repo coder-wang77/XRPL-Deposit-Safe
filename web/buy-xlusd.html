@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | Buy XLUSD</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>Buy XLUSD</span>
+        </a>
+        <a href="profile.html" class="menu-item" data-page="profile">
+          <span class="menu-icon">👤</span>
+          <span>Profile</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Buy XLUSD</h2>
+          <p class="muted">Purchase XLUSD tokens with credit card or PayNow</p>
+        </div>
+      </div>
+
+      <div class="payment-container">
+      <div class="payment-card">
+        <h3>Purchase Amount</h3>
+        <div class="amount-input-group">
+          <label for="amount">Amount (XLUSD)</label>
+          <input 
+            type="number" 
+            id="amount" 
+            placeholder="100" 
+            min="1" 
+            step="0.01"
+            required 
+          />
+          <div class="price-info" id="priceInfo">
+            <span>Price: $1.00 USD per XLUSD</span>
+          </div>
+        </div>
+
+        <div class="total-section">
+          <div class="total-row">
+            <span>Total Amount:</span>
+            <span id="totalAmount">$0.00 USD</span>
+          </div>
+        </div>
+
+        <div class="payment-methods">
+          <h3>Payment Method</h3>
+          <div class="payment-tabs">
+            <button class="tab-btn active" data-method="creditcard">
+              💳 Credit Card
+            </button>
+            <button class="tab-btn" data-method="paynow">
+              📱 PayNow
+            </button>
+          </div>
+
+          <!-- Credit Card Form -->
+          <div class="payment-form active" id="creditcard-form">
+            <label for="cardNumber">Card Number</label>
+            <input 
+              type="text" 
+              id="cardNumber" 
+              placeholder="1234 5678 9012 3456"
+              maxlength="19"
+            />
+
+            <div class="form-row">
+              <div>
+                <label for="expiry">Expiry Date</label>
+                <input 
+                  type="text" 
+                  id="expiry" 
+                  placeholder="MM/YY"
+                  maxlength="5"
+                />
+              </div>
+              <div>
+                <label for="cvv">CVV</label>
+                <input 
+                  type="text" 
+                  id="cvv" 
+                  placeholder="123"
+                  maxlength="4"
+                />
+              </div>
+            </div>
+
+            <label for="cardName">Cardholder Name</label>
+            <input 
+              type="text" 
+              id="cardName" 
+              placeholder="John Doe"
+            />
+
+            <label for="billingEmail">Billing Email</label>
+            <input 
+              type="email" 
+              id="billingEmail" 
+              placeholder="your@email.com"
+            />
+          </div>
+
+          <!-- PayNow Form -->
+          <div class="payment-form" id="paynow-form">
+            <div class="paynow-info">
+              <p>Scan the QR code or use the PayNow details below to complete your payment.</p>
+              <div class="paynow-qr" id="paynowQR">
+                <p class="muted">QR code will appear after entering amount</p>
+              </div>
+              <div class="paynow-details" id="paynowDetails">
+                <p><strong>PayNow UEN:</strong> <span id="paynowUEN">TXXLLC1234</span></p>
+                <p><strong>Reference:</strong> <span id="paynowRef">Loading...</span></p>
+                <p><strong>Amount:</strong> <span id="paynowAmount">$0.00</span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button id="btnProcessPayment" class="btn-pay" disabled>
+          Process Payment
+        </button>
+
+        <div class="result" id="paymentResult"></div>
+      </div>
+      </div>
+    </div>
+
+    <script src="buy-xlusd.js"></script>
+  </body>
+</html>
