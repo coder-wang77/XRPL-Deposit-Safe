@@ -31,10 +31,42 @@ console.log("✅ SESSION_SECRET loaded:", !!process.env.SESSION_SECRET);
 // parse JSON
 app.use(express.json());
 
-// CORS for Live Server
+// CORS for Live Server and development
 app.use(
   cors({
-    origin: ["http://127.0.0.1:5501", "http://127.0.0.1:5503", "http://localhost:5501", "http://localhost:5503"],
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps, Postman, or file://)
+      if (!origin) return callback(null, true);
+      
+      // In development, allow common localhost ports and Live Server ports
+      const allowedOrigins = [
+        "http://127.0.0.1:5500",
+        "http://127.0.0.1:5501",
+        "http://127.0.0.1:5502",
+        "http://127.0.0.1:5503",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:3000",
+        "http://localhost:5500",
+        "http://localhost:5501",
+        "http://localhost:5502",
+        "http://localhost:5503",
+        "http://localhost:8080",
+        "http://localhost:3000",
+      ];
+      
+      // In development, also allow any localhost origin
+      if (process.env.NODE_ENV !== "production") {
+        if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+          return callback(null, true);
+        }
+      }
+      
+      if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   })
 );
@@ -184,11 +216,17 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
     const { payeeAddress, amountXrp, finishAfterUnix, cancelAfterUnix } =
       req.body || {};
 
-    const finish = Number(finishAfterUnix);
-    const cancel = cancelAfterUnix ? Number(cancelAfterUnix) : null;
+    // Basic validation - detailed validation happens in createEscrow
+    if (!payeeAddress || typeof payeeAddress !== "string") {
+      return res.status(400).json({ error: "Missing or invalid payeeAddress" });
+    }
 
-    if (!payeeAddress || !amountXrp || !Number.isFinite(finish)) {
-      return res.status(400).json({ error: "Invalid input" });
+    if (!amountXrp) {
+      return res.status(400).json({ error: "Missing amountXrp" });
+    }
+
+    if (!finishAfterUnix) {
+      return res.status(400).json({ error: "Missing finishAfterUnix" });
     }
 
     if (!process.env.PAYER_SEED) {
@@ -201,10 +239,10 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
     const { result, offerSequence } = await createEscrow({
       client,
       payerWallet,
-      payeeAddress,
+      payeeAddress: payeeAddress.trim(),
       amountXrp,
-      finishAfterUnix: finish,
-      cancelAfterUnix: cancel,
+      finishAfterUnix,
+      cancelAfterUnix,
     });
 
     const txResult = result.result?.meta?.TransactionResult;
@@ -216,6 +254,7 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
         engine_result: result.result?.engine_result,
         engine_result_message: result.result?.engine_result_message,
         txHash: result.result?.hash,
+        error: result.result?.engine_result_message || `Transaction failed: ${txResult}`,
       });
     }
 
@@ -224,9 +263,23 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       txHash: result.result?.hash,
       offerSequence,
       txResult,
+      amountXrp: Number(amountXrp),
+      payeeAddress: payeeAddress.trim(),
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message || String(err) });
+    // Handle validation errors with 400, server errors with 500
+    const statusCode = err.message?.includes("Invalid") || 
+                       err.message?.includes("must be") ||
+                       err.message?.includes("Cannot") ||
+                       err.message?.includes("Too early") ||
+                       err.message?.includes("not found") ||
+                       err.message?.includes("Not authorized")
+                       ? 400 : 500;
+    
+    return res.status(statusCode).json({ 
+      error: err.message || String(err),
+      ok: false,
+    });
   } finally {
     if (client) await client.disconnect();
   }
@@ -237,12 +290,19 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
   let client;
   try {
     const { ownerAddress, offerSequence } = req.body || {};
-    if (!ownerAddress || offerSequence === undefined) {
-      return res.status(400).json({ error: "Missing ownerAddress / offerSequence" });
+    
+    if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
+      return res.status(400).json({ error: "Missing or invalid ownerAddress" });
+    }
+
+    if (offerSequence === undefined || offerSequence === null || offerSequence === "") {
+      return res.status(400).json({ error: "Missing offerSequence" });
     }
 
     const seed = process.env.PAYEE_SEED || process.env.PAYER_SEED;
-    if (!seed) return res.status(500).json({ error: "Missing PAYEE_SEED or PAYER_SEED" });
+    if (!seed) {
+      return res.status(500).json({ error: "Missing PAYEE_SEED or PAYER_SEED" });
+    }
 
     const payeeWallet = xrpl.Wallet.fromSeed(seed);
     client = await getClient();
@@ -250,18 +310,33 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
     const out = await finishEscrow({
       client,
       payeeWallet,
-      ownerAddress,
+      ownerAddress: ownerAddress.trim(),
       offerSequence,
     });
 
-    return res.json({
-      ok: out.txResult === "tesSUCCESS",
+    const isSuccess = out.txResult === "tesSUCCESS";
+    
+    return res.status(isSuccess ? 200 : 400).json({
+      ok: isSuccess,
       txHash: out.hash,
       txResult: out.txResult,
       validated: out.validated,
+      error: isSuccess ? undefined : `Transaction failed: ${out.txResult}`,
     });
   } catch (err) {
-    return res.status(400).json({ error: err.message || String(err) });
+    // Handle validation/authorization errors with 400, server errors with 500
+    const statusCode = err.message?.includes("Invalid") || 
+                       err.message?.includes("must be") ||
+                       err.message?.includes("Not authorized") ||
+                       err.message?.includes("Too early") ||
+                       err.message?.includes("not found") ||
+                       err.message?.includes("Entry not found")
+                       ? 400 : 500;
+    
+    return res.status(statusCode).json({ 
+      error: err.message || String(err),
+      ok: false,
+    });
   } finally {
     if (client) await client.disconnect();
   }
@@ -272,8 +347,13 @@ app.post("/escrow/cancel", requireAuth, async (req, res) => {
   let client;
   try {
     const { ownerAddress, offerSequence } = req.body || {};
-    if (!ownerAddress || offerSequence === undefined) {
-      return res.status(400).json({ error: "Missing ownerAddress / offerSequence" });
+    
+    if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
+      return res.status(400).json({ error: "Missing or invalid ownerAddress" });
+    }
+
+    if (offerSequence === undefined || offerSequence === null || offerSequence === "") {
+      return res.status(400).json({ error: "Missing offerSequence" });
     }
 
     if (!process.env.PAYER_SEED) {
@@ -286,18 +366,34 @@ app.post("/escrow/cancel", requireAuth, async (req, res) => {
     const out = await cancelEscrow({
       client,
       payerWallet,
-      ownerAddress,
+      ownerAddress: ownerAddress.trim(),
       offerSequence,
     });
 
-    return res.json({
-      ok: out.txResult === "tesSUCCESS",
+    const isSuccess = out.txResult === "tesSUCCESS";
+    
+    return res.status(isSuccess ? 200 : 400).json({
+      ok: isSuccess,
       txHash: out.hash,
       txResult: out.txResult,
       validated: out.validated,
+      error: isSuccess ? undefined : `Transaction failed: ${out.txResult}`,
     });
   } catch (err) {
-    return res.status(400).json({ error: err.message || String(err) });
+    // Handle validation/authorization errors with 400, server errors with 500
+    const statusCode = err.message?.includes("Invalid") || 
+                       err.message?.includes("must be") ||
+                       err.message?.includes("Not authorized") ||
+                       err.message?.includes("Too early") ||
+                       err.message?.includes("not found") ||
+                       err.message?.includes("Entry not found") ||
+                       err.message?.includes("no CancelAfter")
+                       ? 400 : 500;
+    
+    return res.status(statusCode).json({ 
+      error: err.message || String(err),
+      ok: false,
+    });
   } finally {
     if (client) await client.disconnect();
   }
