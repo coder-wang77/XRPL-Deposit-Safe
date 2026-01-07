@@ -91,6 +91,13 @@
           </div>
         </div>
         <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">💰</div>
+          <div class="stat-content">
+            <div class="stat-label">XRP Wallet Balance</div>
+            <div class="stat-value" id="xrpWalletBalance">-</div>
+          </div>
+        </div>
+        <div class="stat-card">
           <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">✅</div>
           <div class="stat-content">
             <div class="stat-label">Completed</div>
@@ -172,93 +179,6 @@
           </div>
         </div>
       </div>
-
-      <div class="grid">
-      <!-- Make Deposit -->
-      <div class="card">
-        <h3>Flow A — Make Deposit (EscrowCreate)</h3>
-        <p class="muted">Payer locks XRP into escrow for a payee. Supports conditional releases for hotel bookings, tour reservations, etc.</p>
-
-        <label>Payee XRPL Address <span style="color: #718096; font-weight: 400;">(who will receive the funds)</span></label>
-        <input id="a_payee" placeholder="r..." autocomplete="off" />
-
-        <label>Amount (XRP) <span style="color: #718096; font-weight: 400;">(minimum: 0.000001 XRP)</span></label>
-        <input id="a_amount" type="number" step="0.000001" min="0.000001" placeholder="10.0" autocomplete="off" />
-
-        <label>Release Time (FinishAfter) <span style="color: #718096; font-weight: 400;">(when payee can claim funds, or fallback for conditional escrow)</span></label>
-        <input id="a_finish" type="datetime-local" />
-
-        <label>Cancel Time (CancelAfter) <span style="color: #718096; font-weight: 400;">(optional - when payer can refund)</span></label>
-        <input id="a_cancel" type="datetime-local" />
-
-        <div style="margin: 16px 0; padding: 12px; background: #f0f4ff; border-radius: 8px; border: 1px solid rgba(102, 126, 234, 0.2);">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
-            <input type="checkbox" id="a_useCondition" style="width: 18px; height: 18px; margin: 0; cursor: pointer;" />
-            <span style="font-weight: 600; color: #667eea;">Enable Conditional Escrow</span>
-          </label>
-          <p style="margin: 8px 0 0 26px; font-size: 12px; color: #718096;">Use for hotel bookings, tour reservations, etc. Funds require cryptographic proof to release.</p>
-        </div>
-
-        <div id="a_conditionalSection" style="display: none; margin-top: 16px; padding: 16px; background: #fff8e1; border-radius: 8px; border: 1px solid rgba(251, 191, 36, 0.3);">
-          <label>Condition (hex) <span style="color: #718096; font-weight: 400;">(cryptographic condition)</span></label>
-          <div style="display: flex; gap: 8px;">
-            <input id="a_condition" placeholder="Auto-generated or paste condition" style="flex: 1;" autocomplete="off" />
-            <button type="button" id="btnGenerateCondition" style="padding: 12px 16px; white-space: nowrap; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">Generate</button>
-          </div>
-          <div id="a_conditionPair" style="margin-top: 12px; padding: 12px; background: #fff; border-radius: 6px; display: none;">
-            <div style="font-size: 12px; margin-bottom: 8px; color: #92400e; font-weight: 600;">⚠️ Save this preimage securely!</div>
-            <div style="font-size: 11px; font-family: monospace; word-break: break-all; color: #1a202c; margin-bottom: 4px;">
-              <strong>Preimage:</strong> <span id="a_preimage"></span>
-            </div>
-            <div style="font-size: 11px; font-family: monospace; word-break: break-all; color: #1a202c;">
-              <strong>Condition:</strong> <span id="a_conditionDisplay"></span>
-            </div>
-          </div>
-        </div>
-
-        <button id="btnCreate">Create Escrow</button>
-
-        <div class="result" id="resCreate"></div>
-      </div>
-
-      <!-- Release -->
-      <div class="card">
-        <h3>Flow B — Release Deposit (EscrowFinish)</h3>
-        <p class="muted">Payee claims funds. For conditional escrows, provide the fulfillment (preimage) to release funds.</p>
-
-        <label>Escrow Owner (Payer address) <span style="color: #718096; font-weight: 400;">(who created the escrow)</span></label>
-        <input id="b_owner" placeholder="r..." autocomplete="off" />
-
-        <label>Escrow Sequence <span style="color: #718096; font-weight: 400;">(from escrow creation transaction)</span></label>
-        <input id="b_seq" type="number" placeholder="123" min="1" autocomplete="off" />
-
-        <div id="b_conditionalSection" style="margin-top: 16px; padding: 12px; background: #fff8e1; border-radius: 8px; border: 1px solid rgba(251, 191, 36, 0.3); display: none;">
-          <label>Fulfillment (Preimage) <span style="color: #718096; font-weight: 400;">(required for conditional escrows)</span></label>
-          <input id="b_fulfillment" placeholder="Paste the preimage/fulfillment here" autocomplete="off" style="font-family: monospace; font-size: 12px;" />
-          <p style="margin: 8px 0 0; font-size: 11px; color: #718096;">If this is a conditional escrow, you need the preimage that matches the condition to finish it.</p>
-        </div>
-
-        <button id="btnFinish">Claim Deposit</button>
-
-        <div class="result" id="resFinish"></div>
-      </div>
-
-      <!-- Cancel -->
-      <div class="card">
-        <h3>Flow C — Cancel & Refund (EscrowCancel)</h3>
-        <p class="muted">Payer cancels escrow after CancelAfter time. Only works if CancelAfter was set during creation and the time has passed.</p>
-
-        <label>Escrow Owner (Payer address) <span style="color: #718096; font-weight: 400;">(must match escrow creator)</span></label>
-        <input id="c_owner" placeholder="r..." autocomplete="off" />
-
-        <label>Escrow Sequence <span style="color: #718096; font-weight: 400;">(from escrow creation transaction)</span></label>
-        <input id="c_seq" type="number" placeholder="123" min="1" autocomplete="off" />
-
-        <button id="btnCancel">Cancel & Refund</button>
-
-        <div class="result" id="resCancel"></div>
-      </div>
-    </div>
 
     <script src="dashboard.js"></script>
   </body>

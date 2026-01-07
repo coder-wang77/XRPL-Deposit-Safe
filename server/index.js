@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import xrpl from "xrpl";
 import session from "express-session";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 
 import db from "./db.js";
 import {
@@ -102,6 +103,58 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// ======================
+// WALLET ENCRYPTION UTILITIES
+// ======================
+
+function getEncryptionKey() {
+  // Use SESSION_SECRET as encryption key (in production, use a separate WALLET_ENCRYPTION_KEY)
+  const key = process.env.WALLET_ENCRYPTION_KEY || process.env.SESSION_SECRET || "DEV_ONLY_CHANGE_ME";
+  // Ensure key is 32 bytes for AES-256
+  return crypto.createHash("sha256").update(key).digest();
+}
+
+function encryptSeed(seed) {
+  const algorithm = "aes-256-cbc";
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(algorithm, key, iv);
+  let encrypted = cipher.update(seed, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return iv.toString("hex") + ":" + encrypted;
+}
+
+function decryptSeed(encryptedSeed) {
+  try {
+    const algorithm = "aes-256-cbc";
+    const key = getEncryptionKey();
+    const parts = encryptedSeed.split(":");
+    if (parts.length !== 2) {
+      throw new Error("Invalid encrypted seed format");
+    }
+    const iv = Buffer.from(parts[0], "hex");
+    const encrypted = parts[1];
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    let decrypted = decipher.update(encrypted, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch (err) {
+    throw new Error("Failed to decrypt wallet seed: " + err.message);
+  }
+}
+
+function validateXRPLSeed(seed) {
+  if (!seed || typeof seed !== "string") return false;
+  const trimmed = seed.trim();
+  // XRPL seeds start with 's' (family seed) or 'sEd' (Ed25519)
+  // Length can vary, so we'll be more flexible and let xrpl.Wallet.fromSeed validate
+  if (!trimmed.startsWith("s")) return false;
+  // Basic length check (seeds are typically 29-31 characters)
+  if (trimmed.length < 25 || trimmed.length > 35) return false;
+  // Allow base58 characters (excluding 0, O, I, l to avoid confusion)
+  return /^s[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed);
+}
+
 /* ======================
    HEALTH
 ====================== */
@@ -198,8 +251,405 @@ app.get("/api/me", (req, res) => {
   if (!req.session?.user) {
     return res.status(401).json({ error: "Not logged in" });
   }
-  return res.json({ ok: true, user: req.session.user });
+  
+  // Get wallet info if connected
+  db.get(
+    "SELECT wallet_address, is_verified FROM user_wallets WHERE user_id = ?",
+    [req.session.user.id],
+    (err, wallet) => {
+      if (err) {
+        console.error("Error fetching wallet:", err);
+        return res.json({ ok: true, user: req.session.user, wallet: null });
+      }
+      
+      return res.json({
+        ok: true,
+        user: req.session.user,
+        wallet: wallet ? {
+          address: wallet.wallet_address,
+          isVerified: !!wallet.is_verified,
+        } : null,
+      });
+    }
+  );
 });
+
+/* ======================
+   WALLET CONNECTION
+====================== */
+
+// CONNECT WALLET (store encrypted seed)
+app.post("/api/wallet/connect", requireAuth, async (req, res) => {
+  try {
+    const { seed } = req.body || {};
+    const userId = req.session.user.id;
+
+    if (!seed) {
+      return res.status(400).json({ error: "Wallet seed is required" });
+    }
+
+    // Normalize the seed - remove all whitespace and ensure proper encoding
+    let trimmedSeed = String(seed).trim().replace(/\s+/g, "");
+    
+    // Remove any invisible/hidden characters (zero-width spaces, etc.)
+    trimmedSeed = trimmedSeed.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, "");
+    
+    // Remove any non-printable characters
+    trimmedSeed = trimmedSeed.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+
+    // Basic format check
+    if (!trimmedSeed || trimmedSeed.length < 20) {
+      return res.status(400).json({ 
+        error: "Invalid wallet seed format. XRPL seeds must start with 's' and be at least 20 characters long. Make sure you're copying the seed (secret), not the address." 
+      });
+    }
+
+    if (!trimmedSeed.startsWith("s")) {
+      return res.status(400).json({ 
+        error: "Invalid wallet seed format. XRPL seeds must start with 's'. Make sure you're copying the SEED (secret starting with 's'), not the wallet address (starting with 'r')." 
+      });
+    }
+
+    // Try to create wallet - this is the most reliable validation
+    let wallet;
+    try {
+      wallet = xrpl.Wallet.fromSeed(trimmedSeed);
+    } catch (err) {
+      // Provide more helpful error messages
+      let errorMsg = err.message || err.toString() || "Unknown error";
+      
+      // Check for specific error patterns
+      if (errorMsg.includes("pattern") || errorMsg.includes("expected pattern")) {
+        errorMsg = `The seed format doesn't match XRPL requirements. Please check:\n\n` +
+          `1. Make sure you copied the complete seed (usually 29-31 characters)\n` +
+          `2. The seed should start with 's' followed by letters and numbers only\n` +
+          `3. No spaces, line breaks, or special characters\n` +
+          `4. Use the Secret/Seed from the faucet, NOT the Address\n\n` +
+          `Your seed length: ${trimmedSeed.length} characters\n` +
+          `First 10 chars: ${trimmedSeed.substring(0, 10)}...\n\n` +
+          `If this persists, try generating a new wallet at: https://xrpl.org/xrp-testnet-faucet.html`;
+      } else if (errorMsg.includes("checksum")) {
+        errorMsg = `Invalid seed checksum. The seed appears to be corrupted or incomplete.\n\n` +
+          `Please copy the seed again from the XRPL faucet and try again.`;
+      } else {
+        errorMsg = `Wallet validation failed: ${errorMsg}\n\n` +
+          `Please verify you copied the complete seed correctly.`;
+      }
+      
+      return res.status(400).json({ 
+        error: errorMsg
+      });
+    }
+
+    const walletAddress = wallet.classicAddress;
+    const encryptedSeed = encryptSeed(trimmedSeed);
+
+    // Check if user already has a wallet
+    db.get(
+      "SELECT id FROM user_wallets WHERE user_id = ?",
+      [userId],
+      (err, existing) => {
+        if (err) {
+          console.error("DB error:", err);
+          return res.status(500).json({ error: "Database error" });
+        }
+
+        if (existing) {
+          // Update existing wallet
+          db.run(
+            `UPDATE user_wallets 
+             SET wallet_address = ?, encrypted_seed = ?, is_verified = 0, updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = ?`,
+            [walletAddress, encryptedSeed, userId],
+            function (updateErr) {
+              if (updateErr) {
+                console.error("Update error:", updateErr);
+                return res.status(500).json({ error: "Failed to update wallet" });
+              }
+              return res.json({
+                ok: true,
+                wallet: { address: walletAddress, isVerified: false },
+                message: "Wallet updated. Please verify ownership.",
+              });
+            }
+          );
+        } else {
+          // Insert new wallet
+          db.run(
+            `INSERT INTO user_wallets (user_id, wallet_address, encrypted_seed, is_verified)
+             VALUES (?, ?, ?, 0)`,
+            [userId, walletAddress, encryptedSeed],
+            function (insertErr) {
+              if (insertErr) {
+                console.error("Insert error:", insertErr);
+                return res.status(500).json({ error: "Failed to connect wallet" });
+              }
+              return res.json({
+                ok: true,
+                wallet: { address: walletAddress, isVerified: false },
+                message: "Wallet connected. Please verify ownership.",
+              });
+            }
+          );
+        }
+      }
+    );
+  } catch (err) {
+    console.error("Wallet connect error:", err);
+    return res.status(500).json({ error: err.message || "Server error" });
+  }
+});
+
+// VERIFY WALLET OWNERSHIP (checks wallet exists on XRPL)
+app.post("/api/wallet/verify", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const userId = req.session.user.id;
+
+    // Get user's wallet
+    db.get(
+      "SELECT encrypted_seed, wallet_address FROM user_wallets WHERE user_id = ?",
+      [userId],
+      async (err, wallet) => {
+        if (err || !wallet) {
+          return res.status(404).json({ ok: false, error: "Wallet not connected. Please connect your wallet first." });
+        }
+
+        try {
+          // Verify by checking wallet exists and is valid on XRPL
+          client = await getClient();
+
+          let accountInfo;
+          try {
+            accountInfo = await client.request({
+              command: "account_info",
+              account: wallet.wallet_address,
+              ledger_index: "validated",
+            });
+          } catch (apiErr) {
+            // If account doesn't exist, it might not be funded yet
+            if (apiErr.data?.error === "actNotFound") {
+              if (client) await client.disconnect();
+              return res.status(400).json({ 
+                ok: false,
+                error: "Wallet address not found on XRPL. Make sure the wallet has been funded with XRP (even a small amount) to activate it on the ledger.",
+                walletAddress: wallet.wallet_address,
+              });
+            }
+            throw apiErr;
+          }
+
+          if (accountInfo.result.account_data) {
+            // Get wallet balance
+            const balanceDrops = accountInfo.result.account_data.Balance || "0";
+            const balanceXrp = parseFloat(xrpl.dropsToXrp(balanceDrops));
+            
+            // Verify seed matches address (sanity check)
+            try {
+              const seed = decryptSeed(wallet.encrypted_seed);
+              const userWallet = xrpl.Wallet.fromSeed(seed);
+              
+              if (userWallet.classicAddress !== wallet.wallet_address) {
+                if (client) await client.disconnect();
+                return res.status(400).json({ 
+                  ok: false,
+                  error: "Wallet seed doesn't match stored address. Please reconnect your wallet." 
+                });
+              }
+            } catch (decryptErr) {
+              console.error("Decrypt error during verify:", decryptErr);
+              if (client) await client.disconnect();
+              return res.status(500).json({ ok: false, error: "Failed to validate wallet seed" });
+            }
+
+            // Wallet exists and is valid - mark as verified
+            db.run(
+              `UPDATE user_wallets 
+               SET is_verified = 1, verified_at = CURRENT_TIMESTAMP 
+               WHERE user_id = ?`,
+              [userId],
+              async function (updateErr) {
+                if (updateErr) {
+                  console.error("Verify update error:", updateErr);
+                  if (client) await client.disconnect();
+                  return res.status(500).json({ ok: false, error: "Failed to update verification status" });
+                }
+                if (client) await client.disconnect();
+                return res.json({
+                  ok: true,
+                  wallet: {
+                    address: wallet.wallet_address,
+                    isVerified: true,
+                    balanceXrp: balanceXrp,
+                  },
+                  message: "Wallet verified successfully!",
+                });
+              }
+            );
+          } else {
+            return res.status(400).json({ error: "Wallet not found on XRPL ledger" });
+          }
+        } catch (verifyErr) {
+          console.error("Verification error:", verifyErr);
+          // Make sure to send error response before disconnecting
+          const errorResponse = res.status(400).json({ 
+            ok: false,
+            error: "Verification failed: " + (verifyErr.message || verifyErr.toString()),
+            details: verifyErr.data?.error || "Unknown error"
+          });
+          if (client) await client.disconnect();
+          return errorResponse;
+        } finally {
+          if (client) await client.disconnect();
+        }
+      }
+    );
+  } catch (err) {
+    if (client) await client.disconnect();
+    return res.status(500).json({ error: err.message || "Server error" });
+  }
+});
+
+// GET WALLET STATUS (balance, verification status, etc.)
+app.get("/api/wallet/status", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const userId = req.session.user.id;
+
+    db.get(
+      "SELECT wallet_address, is_verified, created_at, verified_at FROM user_wallets WHERE user_id = ?",
+      [userId],
+      async (err, wallet) => {
+        if (err) {
+          return res.status(500).json({ error: "Database error" });
+        }
+
+        if (!wallet) {
+          return res.json({
+            ok: true,
+            connected: false,
+            wallet: null,
+          });
+        }
+
+        // Get live wallet status from XRPL
+        try {
+          client = await getClient();
+
+          let accountInfo;
+          try {
+            accountInfo = await client.request({
+              command: "account_info",
+              account: wallet.wallet_address,
+              ledger_index: "validated",
+            });
+          } catch (apiErr) {
+            if (apiErr.data?.error === "actNotFound") {
+              return res.json({
+                ok: true,
+                connected: true,
+                verified: !!wallet.is_verified,
+                wallet: {
+                  address: wallet.wallet_address,
+                  existsOnLedger: false,
+                  balanceXrp: 0,
+                  message: "Wallet not activated on XRPL. Fund it with XRP to activate.",
+                },
+              });
+            }
+            throw apiErr;
+          }
+
+          const balanceDrops = accountInfo.result.account_data?.Balance || "0";
+          const balanceXrp = parseFloat(xrpl.dropsToXrp(balanceDrops));
+          const sequence = accountInfo.result.account_data?.Sequence || 0;
+
+          return res.json({
+            ok: true,
+            connected: true,
+            verified: !!wallet.is_verified,
+            wallet: {
+              address: wallet.wallet_address,
+              existsOnLedger: true,
+              balanceXrp: balanceXrp,
+              sequence: sequence,
+              createdAt: wallet.created_at,
+              verifiedAt: wallet.verified_at,
+            },
+          });
+        } catch (statusErr) {
+          console.error("Status check error:", statusErr);
+          return res.json({
+            ok: true,
+            connected: true,
+            verified: !!wallet.is_verified,
+            wallet: {
+              address: wallet.wallet_address,
+              existsOnLedger: null,
+              error: statusErr.message,
+            },
+          });
+        } finally {
+          if (client) await client.disconnect();
+        }
+      }
+    );
+  } catch (err) {
+    if (client) await client.disconnect();
+    return res.status(500).json({ error: err.message || "Server error" });
+  }
+});
+
+// GET USER WALLET
+app.get("/api/wallet", requireAuth, (req, res) => {
+  const userId = req.session.user.id;
+
+  db.get(
+    "SELECT wallet_address, is_verified, created_at, verified_at FROM user_wallets WHERE user_id = ?",
+    [userId],
+    (err, wallet) => {
+      if (err) {
+        console.error("DB error:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      if (!wallet) {
+        return res.json({ ok: true, wallet: null });
+      }
+
+      return res.json({
+        ok: true,
+        wallet: {
+          address: wallet.wallet_address,
+          isVerified: !!wallet.is_verified,
+          createdAt: wallet.created_at,
+          verifiedAt: wallet.verified_at,
+        },
+      });
+    }
+  );
+});
+
+// GET USER WALLET (for internal use - returns decrypted seed)
+function getUserWallet(userId, callback) {
+  db.get(
+    "SELECT encrypted_seed, wallet_address FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+    [userId],
+    (err, wallet) => {
+      if (err || !wallet) {
+        return callback(err || new Error("Wallet not found or not verified"), null);
+      }
+
+      try {
+        const seed = decryptSeed(wallet.encrypted_seed);
+        const xrplWallet = xrpl.Wallet.fromSeed(seed);
+        return callback(null, xrplWallet);
+      } catch (decryptErr) {
+        return callback(decryptErr, null);
+      }
+    }
+  );
+}
 
 // LOGOUT
 app.post("/api/logout", (req, res) => {
@@ -219,6 +669,7 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
   try {
     const { payeeAddress, amountXrp, finishAfterUnix, cancelAfterUnix, condition } =
       req.body || {};
+    const userId = req.session.user.id;
 
     // Basic validation - detailed validation happens in createEscrow
     if (!payeeAddress || typeof payeeAddress !== "string") {
@@ -233,11 +684,26 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing finishAfterUnix" });
     }
 
+    // Try to use user's wallet first, fallback to server wallet
+    let payerWallet;
+    try {
+      const userWallet = await new Promise((resolve, reject) => {
+        getUserWallet(userId, (err, wallet) => {
+          if (err) reject(err);
+          else resolve(wallet);
+        });
+      });
+      payerWallet = userWallet;
+    } catch (err) {
+      // Fallback to server wallet
     if (!process.env.PAYER_SEED) {
-      return res.status(500).json({ error: "Missing PAYER_SEED" });
+        return res.status(400).json({ 
+          error: "No wallet connected. Please connect your XRP wallet first, or server PAYER_SEED must be configured." 
+        });
+      }
+      payerWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
     }
 
-    const payerWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
     client = await getClient();
 
     const { result, offerSequence } = await createEscrow({

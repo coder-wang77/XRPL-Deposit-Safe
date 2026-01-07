@@ -118,13 +118,51 @@ async function loadStatistics() {
 
     if (res.ok) {
       const data = await res.json();
-      document.getElementById("totalEscrows").textContent = data.totalEscrows || 0;
-      document.getElementById("totalValue").textContent = `${data.totalValue || 0} XRP`;
-      document.getElementById("completedCount").textContent = data.completed || 0;
-      document.getElementById("pendingCount").textContent = data.pending || 0;
+      document.getElementById("totalEscrows").textContent = Math.round(data.totalEscrows || 0);
+      const totalValue = parseFloat(data.totalValue || 0);
+      document.getElementById("totalValue").textContent = `${totalValue.toFixed(2)} XRP`;
+      document.getElementById("completedCount").textContent = Math.round(data.completed || 0);
+      document.getElementById("pendingCount").textContent = Math.round(data.pending || 0);
     }
   } catch (err) {
     console.error("Failed to load statistics:", err);
+  }
+}
+
+// Load XRP wallet balance (same as profile page)
+async function loadXRPWalletBalance() {
+  try {
+    const res = await fetch(`${API}/api/wallet/status`, {
+      credentials: "include",
+    });
+
+    const balanceEl = document.getElementById("xrpWalletBalance");
+    if (!balanceEl) return;
+
+    if (res.ok) {
+      const data = await res.json();
+      
+      if (data.wallet && data.connected && data.wallet.balanceXrp !== undefined) {
+        balanceEl.textContent = `${data.wallet.balanceXrp.toFixed(2)} XRP`;
+        balanceEl.style.color = "#10b981";
+      } else if (data.wallet && data.connected && data.wallet.existsOnLedger === false) {
+        balanceEl.textContent = "Not Activated";
+        balanceEl.style.color = "#f59e0b";
+      } else {
+        balanceEl.textContent = "Not Connected";
+        balanceEl.style.color = "#718096";
+      }
+    } else {
+      balanceEl.textContent = "Error";
+      balanceEl.style.color = "#ef4444";
+    }
+  } catch (err) {
+    console.error("Failed to load XRP wallet balance:", err);
+    const balanceEl = document.getElementById("xrpWalletBalance");
+    if (balanceEl) {
+      balanceEl.textContent = "Error";
+      balanceEl.style.color = "#ef4444";
+    }
   }
 }
 
@@ -188,7 +226,9 @@ function formatDate(timestamp) {
 loadUser();
 loadStatistics();
 loadRecentActivity();
+loadXRPWalletBalance();
 setInterval(loadStatistics, 30000); // Refresh every 30 seconds
+setInterval(loadXRPWalletBalance, 30000); // Refresh XRP wallet balance every 30 seconds
 
 /* ======================
    XLUSD BALANCE & BUY
@@ -227,514 +267,6 @@ setInterval(loadXLUSDBalance, 10000);
 // Buy XLUSD button handler - navigate to payment page
 buyBtn.addEventListener("click", () => {
   window.location.href = "buy-xlusd.html";
-});
-
-/* ======================
-   CREATE ESCROW
-====================== */
-const btnCreate = document.getElementById("btnCreate");
-const payeeInput = document.getElementById("a_payee");
-const amountInput = document.getElementById("a_amount");
-const finishInput = document.getElementById("a_finish");
-const cancelInput = document.getElementById("a_cancel");
-const resCreate = document.getElementById("resCreate");
-
-// Set minimum datetime to now for finish input
-finishInput.min = new Date().toISOString().slice(0, 16);
-finishInput.addEventListener("change", () => {
-  if (finishInput.value) {
-    cancelInput.min = finishInput.value;
-  }
-});
-
-// Conditional escrow toggle
-const useConditionCheckbox = document.getElementById("a_useCondition");
-const conditionalSection = document.getElementById("a_conditionalSection");
-const conditionInput = document.getElementById("a_condition");
-const btnGenerateCondition = document.getElementById("btnGenerateCondition");
-const conditionPairDiv = document.getElementById("a_conditionPair");
-const preimageDisplay = document.getElementById("a_preimage");
-const conditionDisplay = document.getElementById("a_conditionDisplay");
-
-useConditionCheckbox.addEventListener("change", () => {
-  conditionalSection.style.display = useConditionCheckbox.checked ? "block" : "none";
-  if (!useConditionCheckbox.checked) {
-    conditionInput.value = "";
-    conditionPairDiv.style.display = "none";
-  }
-});
-
-// Generate condition-fulfillment pair
-btnGenerateCondition.addEventListener("click", async () => {
-  try {
-    const res = await fetch(`${API}/escrow/generate-condition`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({}),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      alert(`Failed to generate condition: ${data.error || "Unknown error"}`);
-      return;
-    }
-
-    // Display the pair
-    conditionInput.value = data.condition;
-    preimageDisplay.textContent = data.preimage;
-    conditionDisplay.textContent = data.condition;
-    conditionPairDiv.style.display = "block";
-
-    // Copy preimage to clipboard (optional feature)
-    navigator.clipboard?.writeText(data.preimage).then(() => {
-      const btn = btnGenerateCondition;
-      const originalText = btn.textContent;
-      btn.textContent = "✅ Copied!";
-      setTimeout(() => {
-        btn.textContent = originalText;
-      }, 2000);
-    });
-  } catch (err) {
-    alert(`Error: ${err.message}`);
-  }
-});
-
-// Real-time address validation
-payeeInput.addEventListener("blur", () => {
-  const address = payeeInput.value.trim();
-  if (address && !isValidXRPLAddress(address)) {
-    payeeInput.style.borderColor = "#ef4444";
-    payeeInput.title = "Invalid XRPL address format";
-  } else {
-    payeeInput.style.borderColor = "";
-    payeeInput.title = "";
-  }
-});
-
-// Amount validation
-amountInput.addEventListener("input", () => {
-  const amount = parseFloat(amountInput.value);
-  if (amount && amount < 0.000001) {
-    amountInput.style.borderColor = "#ef4444";
-    amountInput.title = "Minimum amount is 0.000001 XRP";
-  } else {
-    amountInput.style.borderColor = "";
-    amountInput.title = "";
-  }
-});
-
-btnCreate.addEventListener("click", async () => {
-  const payeeAddress = payeeInput.value.trim();
-  const amountXrp = amountInput.value.trim();
-  const finishLocal = finishInput.value;
-  const cancelLocal = cancelInput.value;
-  const useCondition = useConditionCheckbox.checked;
-  const condition = useCondition ? conditionInput.value.trim() : null;
-
-  // Clear previous results
-  resCreate.style.display = "none";
-
-  // Validation
-  if (!payeeAddress) {
-    show(resCreate, false, "❌ Please enter a payee XRPL address");
-    payeeInput.focus();
-    return;
-  }
-
-  if (!isValidXRPLAddress(payeeAddress)) {
-    show(resCreate, false, `❌ Invalid XRPL address format: ${formatAddress(payeeAddress)}`);
-    payeeInput.focus();
-    return;
-  }
-
-  if (!amountXrp) {
-    show(resCreate, false, "❌ Please enter an amount in XRP");
-    amountInput.focus();
-    return;
-  }
-
-  const amount = parseFloat(amountXrp);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    show(resCreate, false, "❌ Amount must be a positive number");
-    amountInput.focus();
-    return;
-  }
-
-  if (amount < 0.000001) {
-    show(resCreate, false, "❌ Minimum amount is 0.000001 XRP");
-    amountInput.focus();
-    return;
-  }
-
-  if (!finishLocal) {
-    show(resCreate, false, "❌ Please select a release time (FinishAfter)");
-    finishInput.focus();
-    return;
-  }
-
-  const finishAfterUnix = toUnixSeconds(finishLocal);
-  if (!finishAfterUnix || finishAfterUnix <= Math.floor(Date.now() / 1000)) {
-    show(resCreate, false, "❌ Release time must be in the future");
-    finishInput.focus();
-    return;
-  }
-
-  let cancelAfterUnix = null;
-  if (cancelLocal) {
-    cancelAfterUnix = toUnixSeconds(cancelLocal);
-    if (!cancelAfterUnix || cancelAfterUnix <= finishAfterUnix) {
-      show(resCreate, false, "❌ Cancel time must be after the release time");
-      cancelInput.focus();
-      return;
-    }
-  }
-
-  // Validate condition if conditional escrow is enabled
-  if (useCondition && !condition) {
-    show(resCreate, false, "❌ Conditional escrow enabled but no condition provided. Click 'Generate' to create one.");
-    conditionInput.focus();
-    return;
-  }
-
-  if (useCondition && condition) {
-    // Basic hex validation
-    if (!/^[0-9A-Fa-f]+$/.test(condition.replace(/\s+/g, ""))) {
-      show(resCreate, false, "❌ Condition must be a valid hex string");
-      conditionInput.focus();
-      return;
-    }
-    
-    if (condition.replace(/\s+/g, "").length < 32) {
-      show(resCreate, false, "❌ Condition must be at least 32 hex characters (16 bytes)");
-      conditionInput.focus();
-      return;
-    }
-  }
-
-  setButtonLoading(btnCreate, true, "Create Escrow");
-
-  try {
-    const res = await fetch(`${API}/escrow/create`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        payeeAddress,
-        amountXrp: amount,
-        finishAfterUnix,
-        cancelAfterUnix,
-        condition: useCondition ? condition.replace(/\s+/g, "").toUpperCase() : null,
-      }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      const errorMsg = formatError(data.error || data.txResult || "Unknown error");
-      show(
-        resCreate,
-        false,
-        `❌ Escrow creation failed\n\n${errorMsg}${data.engine_result_message ? `\n\nDetails: ${data.engine_result_message}` : ""}`
-      );
-      return;
-    }
-
-    // Success
-    const txHash = data.txHash || "N/A";
-    const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    let successMsg = `✅ Escrow Created Successfully!\n\n` +
-      `Amount: ${amount} XRP\n` +
-      `Payee: ${formatAddress(payeeAddress)}\n` +
-      `Sequence: ${data.offerSequence}\n` +
-      `Release Time: ${formatDateTime(finishAfterUnix)}\n` +
-      `${cancelAfterUnix ? `Cancel Time: ${formatDateTime(cancelAfterUnix)}\n` : ""}`;
-    
-    if (useCondition && data.hasCondition) {
-      successMsg += `\n🔐 Conditional Escrow: YES\n`;
-      successMsg += `Condition: ${condition.substring(0, 32)}...\n`;
-      if (preimageDisplay.textContent) {
-        successMsg += `\n⚠️ IMPORTANT: Save this preimage!\n`;
-        successMsg += `Preimage: ${preimageDisplay.textContent}\n`;
-        successMsg += `You'll need it to finish this escrow.\n`;
-      }
-    }
-    
-    successMsg += `\nTransaction: ${txHash}\n\n` +
-      `View on XRPL Explorer:\n${txUrl}`;
-    
-    show(resCreate, true, successMsg);
-
-    // Reset form after success
-    setTimeout(() => {
-      payeeInput.value = "";
-      amountInput.value = "";
-      finishInput.value = "";
-      cancelInput.value = "";
-      conditionInput.value = "";
-      useConditionCheckbox.checked = false;
-      conditionalSection.style.display = "none";
-      conditionPairDiv.style.display = "none";
-      payeeInput.style.borderColor = "";
-      amountInput.style.borderColor = "";
-      resCreate.style.display = "none";
-    }, 15000); // Keep success message longer for conditional escrows (15 seconds)
-
-    // Refresh statistics
-    loadStatistics();
-
-  } catch (err) {
-    console.error("Create escrow error:", err);
-    show(resCreate, false, `❌ Network error: ${err.message || "Cannot reach backend. Is the server running?"}`);
-  } finally {
-    setButtonLoading(btnCreate, false);
-  }
-});
-
-/* ======================
-   FINISH ESCROW
-====================== */
-const btnFinish = document.getElementById("btnFinish");
-const ownerFinishInput = document.getElementById("b_owner");
-const seqFinishInput = document.getElementById("b_seq");
-const resFinish = document.getElementById("resFinish");
-const conditionalFinishSection = document.getElementById("b_conditionalSection");
-const fulfillmentInput = document.getElementById("b_fulfillment");
-
-// Real-time address validation
-ownerFinishInput.addEventListener("blur", () => {
-  const address = ownerFinishInput.value.trim();
-  if (address && !isValidXRPLAddress(address)) {
-    ownerFinishInput.style.borderColor = "#ef4444";
-    ownerFinishInput.title = "Invalid XRPL address format";
-  } else {
-    ownerFinishInput.style.borderColor = "";
-    ownerFinishInput.title = "";
-  }
-});
-
-// Sequence validation
-seqFinishInput.addEventListener("input", () => {
-  const seq = seqFinishInput.value.trim();
-  if (seq && (!Number.isFinite(Number(seq)) || Number(seq) <= 0)) {
-    seqFinishInput.style.borderColor = "#ef4444";
-    seqFinishInput.title = "Sequence must be a positive integer";
-  } else {
-    seqFinishInput.style.borderColor = "";
-    seqFinishInput.title = "";
-  }
-});
-
-btnFinish.addEventListener("click", async () => {
-  const ownerAddress = ownerFinishInput.value.trim();
-  const seqValue = seqFinishInput.value.trim();
-  const fulfillment = fulfillmentInput.value.trim();
-
-  // Clear previous results
-  resFinish.style.display = "none";
-
-  // Validation
-  if (!ownerAddress) {
-    show(resFinish, false, "❌ Please enter the escrow owner (payer) address");
-    ownerFinishInput.focus();
-    return;
-  }
-
-  if (!isValidXRPLAddress(ownerAddress)) {
-    show(resFinish, false, `❌ Invalid XRPL address format: ${formatAddress(ownerAddress)}`);
-    ownerFinishInput.focus();
-    return;
-  }
-
-  if (!seqValue) {
-    show(resFinish, false, "❌ Please enter the escrow sequence number");
-    seqFinishInput.focus();
-    return;
-  }
-
-  const offerSequence = Number(seqValue);
-  if (!Number.isFinite(offerSequence) || offerSequence <= 0 || !Number.isInteger(offerSequence)) {
-    show(resFinish, false, "❌ Sequence must be a positive integer");
-    seqFinishInput.focus();
-    return;
-  }
-
-  setButtonLoading(btnFinish, true, "Claim Deposit");
-
-  try {
-    const res = await fetch(`${API}/escrow/finish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ 
-        ownerAddress, 
-        offerSequence,
-        fulfillment: fulfillment || null, // Optional fulfillment for conditional escrows
-      }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      const errorMsg = formatError(data.error || "Unknown error");
-      show(resFinish, false, `❌ Failed to finish escrow\n\n${errorMsg}`);
-      return;
-    }
-
-    // Success
-    const txHash = data.txHash || "N/A";
-    const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    const successMsg = `✅ Escrow Finished Successfully!\n\n` +
-      `Owner: ${formatAddress(ownerAddress)}\n` +
-      `Sequence: ${offerSequence}\n` +
-      `Transaction: ${txHash}\n` +
-      `Result: ${data.txResult || "tesSUCCESS"}\n` +
-      `Validated: ${data.validated ? "Yes" : "Pending"}\n\n` +
-      `View on XRPL Explorer:\n${txUrl}`;
-    
-    show(resFinish, true, successMsg);
-
-    // Reset form after success
-    setTimeout(() => {
-      ownerFinishInput.value = "";
-      seqFinishInput.value = "";
-      ownerFinishInput.style.borderColor = "";
-      seqFinishInput.style.borderColor = "";
-      resFinish.style.display = "none";
-    }, 10000);
-
-    // Refresh statistics
-    loadStatistics();
-
-  } catch (err) {
-    console.error("Finish escrow error:", err);
-    show(resFinish, false, `❌ Network error: ${err.message || "Cannot reach backend. Is the server running?"}`);
-  } finally {
-    setButtonLoading(btnFinish, false);
-  }
-});
-
-/* ======================
-   CANCEL ESCROW
-====================== */
-const btnCancel = document.getElementById("btnCancel");
-const ownerCancelInput = document.getElementById("c_owner");
-const seqCancelInput = document.getElementById("c_seq");
-const resCancel = document.getElementById("resCancel");
-
-// Real-time address validation
-ownerCancelInput.addEventListener("blur", () => {
-  const address = ownerCancelInput.value.trim();
-  if (address && !isValidXRPLAddress(address)) {
-    ownerCancelInput.style.borderColor = "#ef4444";
-    ownerCancelInput.title = "Invalid XRPL address format";
-  } else {
-    ownerCancelInput.style.borderColor = "";
-    ownerCancelInput.title = "";
-  }
-});
-
-// Sequence validation
-seqCancelInput.addEventListener("input", () => {
-  const seq = seqCancelInput.value.trim();
-  if (seq && (!Number.isFinite(Number(seq)) || Number(seq) <= 0)) {
-    seqCancelInput.style.borderColor = "#ef4444";
-    seqCancelInput.title = "Sequence must be a positive integer";
-  } else {
-    seqCancelInput.style.borderColor = "";
-    seqCancelInput.title = "";
-  }
-});
-
-btnCancel.addEventListener("click", async () => {
-  const ownerAddress = ownerCancelInput.value.trim();
-  const seqValue = seqCancelInput.value.trim();
-
-  // Clear previous results
-  resCancel.style.display = "none";
-
-  // Validation
-  if (!ownerAddress) {
-    show(resCancel, false, "❌ Please enter the escrow owner (payer) address");
-    ownerCancelInput.focus();
-    return;
-  }
-
-  if (!isValidXRPLAddress(ownerAddress)) {
-    show(resCancel, false, `❌ Invalid XRPL address format: ${formatAddress(ownerAddress)}`);
-    ownerCancelInput.focus();
-    return;
-  }
-
-  if (!seqValue) {
-    show(resCancel, false, "❌ Please enter the escrow sequence number");
-    seqCancelInput.focus();
-    return;
-  }
-
-  const offerSequence = Number(seqValue);
-  if (!Number.isFinite(offerSequence) || offerSequence <= 0 || !Number.isInteger(offerSequence)) {
-    show(resCancel, false, "❌ Sequence must be a positive integer");
-    seqCancelInput.focus();
-    return;
-  }
-
-  // Confirm cancellation
-  if (!confirm(`Are you sure you want to cancel escrow?\n\nOwner: ${formatAddress(ownerAddress)}\nSequence: ${offerSequence}\n\nThis will refund the escrowed XRP to the owner.`)) {
-    return;
-  }
-
-  setButtonLoading(btnCancel, true, "Cancel & Refund");
-
-  try {
-    const res = await fetch(`${API}/escrow/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ ownerAddress, offerSequence }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      const errorMsg = formatError(data.error || "Unknown error");
-      show(resCancel, false, `❌ Failed to cancel escrow\n\n${errorMsg}`);
-      return;
-    }
-
-    // Success
-    const txHash = data.txHash || "N/A";
-    const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    const successMsg = `✅ Escrow Cancelled Successfully!\n\n` +
-      `Owner: ${formatAddress(ownerAddress)}\n` +
-      `Sequence: ${offerSequence}\n` +
-      `Transaction: ${txHash}\n` +
-      `Result: ${data.txResult || "tesSUCCESS"}\n` +
-      `Validated: ${data.validated ? "Yes" : "Pending"}\n\n` +
-      `Funds have been refunded to the owner.\n\n` +
-      `View on XRPL Explorer:\n${txUrl}`;
-    
-    show(resCancel, true, successMsg);
-
-    // Reset form after success
-    setTimeout(() => {
-      ownerCancelInput.value = "";
-      seqCancelInput.value = "";
-      ownerCancelInput.style.borderColor = "";
-      seqCancelInput.style.borderColor = "";
-      resCancel.style.display = "none";
-    }, 10000);
-
-    // Refresh statistics
-    loadStatistics();
-
-  } catch (err) {
-    console.error("Cancel escrow error:", err);
-    show(resCancel, false, `❌ Network error: ${err.message || "Cannot reach backend. Is the server running?"}`);
-  } finally {
-    setButtonLoading(btnCancel, false);
-  }
 });
 
 /* ======================
@@ -885,6 +417,7 @@ btnFreelancerCreate.addEventListener("click", async () => {
     
     show(resFreelancerCreate, true, successMsg);
     loadStatistics();
+    loadXRPWalletBalance();
 
   } catch (err) {
     console.error("Create freelancer escrow error:", err);

@@ -96,12 +96,49 @@
               <span class="detail-value" id="detailEmail">-</span>
             </div>
             <div class="detail-item">
-              <span class="detail-label">XRPL Address</span>
+              <span class="detail-label">XRPL Wallet</span>
               <span class="detail-value" id="detailAddress">-</span>
             </div>
             <div class="detail-item">
-              <span class="detail-label">Account Type</span>
-              <span class="detail-value">Standard</span>
+              <span class="detail-label">Wallet Status</span>
+              <span class="detail-value" id="walletStatus" style="font-weight: 600;">Not Connected</span>
+            </div>
+            <div class="detail-item" id="walletBalanceItem" style="display: none;">
+              <span class="detail-label">XRP Balance</span>
+              <span class="detail-value" id="walletBalance" style="font-weight: 600; color: #10b981;">-</span>
+            </div>
+            
+            <!-- Verify Button (shown when wallet connected but not verified) -->
+            <div class="detail-item" id="walletVerifySection" style="display: none; padding-top: 16px; border-top: 1px solid rgba(0,0,0,0.05);">
+              <button id="btnVerifyWallet" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px;">
+                ✅ Verify Wallet
+              </button>
+              <p style="font-size: 11px; color: #718096; margin: 8px 0 0; text-align: center;">
+                Verify ownership to use your wallet for escrow operations
+              </p>
+            </div>
+            
+            <!-- Connect Section (shown when no wallet connected) -->
+            <div class="detail-item" id="walletConnectSection" style="padding-top: 20px; border-top: 1px solid rgba(0,0,0,0.05);">
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <input 
+                  type="text" 
+                  id="walletSeedInput" 
+                  placeholder="Enter your XRPL wallet seed (starts with 's'...)" 
+                  style="padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 13px;"
+                  autocomplete="off"
+                />
+                <p style="font-size: 11px; color: #718096; margin: 4px 0 0; line-height: 1.4;">
+                  💡 Get a testnet wallet seed from: <a href="https://xrpl.org/xrp-testnet-faucet.html" target="_blank" style="color: #667eea;">XRPL Testnet Faucet</a><br/>
+                  Make sure to copy the <strong>Secret</strong> (seed starting with 's'), not the Address (starting with 'r')
+                </p>
+                <button id="btnConnectWallet" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                  🔒 Connect Wallet
+                </button>
+                <p style="font-size: 12px; color: #718096; margin: 0;">
+                  ⚠️ Your seed is encrypted and stored securely. Never share it with anyone.
+                </p>
+              </div>
             </div>
           </div>
 

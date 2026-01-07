@@ -48,4 +48,19 @@ db.run(`
   )
 `);
 
+// User wallets table - stores encrypted wallet seeds
+db.run(`
+  CREATE TABLE IF NOT EXISTS user_wallets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    wallet_address TEXT NOT NULL,
+    encrypted_seed TEXT NOT NULL,
+    is_verified INTEGER DEFAULT 0,
+    verified_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
 export default db;
