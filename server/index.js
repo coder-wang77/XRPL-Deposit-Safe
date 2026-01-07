@@ -78,20 +78,15 @@ app.post("/escrow/create", async (req, res) => {
       });
     }
 
-    // Must be plausible unix seconds (>= 2000-01-01)
-    if (finish < 946684800) {
+    // finish must be after now
+    const now = Math.floor(Date.now() / 1000);
+    if (finish <= now) {
       return res.status(400).json({
         error: "finishAfterUnix is too small. Use unix seconds like now+60.",
       });
     }
 
-    if (cancel && cancel < 946684800) {
-      return res.status(400).json({
-        error: "cancelAfterUnix is too small. Use unix seconds like now+180.",
-      });
-    }
-
-    // Cancel must be after finish
+    // cancel must be after finish
     if (cancel && cancel <= finish) {
       return res.status(400).json({
         error: "cancelAfterUnix must be greater than finishAfterUnix",
