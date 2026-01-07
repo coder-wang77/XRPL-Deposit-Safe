@@ -324,6 +324,61 @@ export async function createFreelancerEscrow({
   };
 }
 
+/**
+ * Create a QA escrow (Quality Assurance with requirements checklist)
+ * Client locks payment with requirements → Service provider delivers → 
+ * AI verifies requirements → Service provider claims payment (before deadline) OR client refunds (after deadline)
+ * 
+ * @param {Object} params
+ * @param {Object} params.client - XRPL client
+ * @param {Object} params.clientWallet - Client's wallet (payer)
+ * @param {string} params.providerAddress - Service provider's XRPL address (payee)
+ * @param {number} params.amountXrp - Amount in XRP
+ * @param {number} params.deadlineUnix - Deadline unix timestamp (when refund becomes available)
+ * @param {string} params.preimage - Optional preimage (if not provided, generates one)
+ * @returns {Object} Escrow creation result with condition info
+ */
+export async function createQAEscrow({
+  client,
+  clientWallet,
+  providerAddress,
+  amountXrp,
+  deadlineUnix,
+  preimage = null,
+}) {
+  // Generate condition-fulfillment pair if not provided
+  let conditionPair;
+  if (preimage) {
+    const condition = createCondition(preimage);
+    conditionPair = { preimage, condition };
+  } else {
+    conditionPair = generateConditionPair();
+  }
+
+  // Create escrow with condition and deadline
+  // Logic:
+  // - FinishAfter = deadline (service provider can finish before deadline with preimage)
+  // - CancelAfter = deadline + 1 (client can refund after deadline)
+  // - Service provider needs preimage (automatically provided by server when AI verifies) to finish before deadline
+  // - After deadline, only client can cancel/refund
+  const result = await createEscrow({
+    client,
+    payerWallet: clientWallet,
+    payeeAddress: providerAddress,
+    amountXrp,
+    finishAfterUnix: deadlineUnix, // Deadline - service provider can finish before this with preimage
+    cancelAfterUnix: deadlineUnix + 1, // After deadline - client can refund
+    condition: conditionPair.condition, // Preimage required to finish
+  });
+
+  return {
+    ...result,
+    preimage: conditionPair.preimage,
+    condition: conditionPair.condition,
+    deadlineUnix,
+  };
+}
+
 // finish an escrow to payee
 export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSequence, fulfillment }) {
   // Validate inputs
