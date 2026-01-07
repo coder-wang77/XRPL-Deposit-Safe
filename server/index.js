@@ -11,6 +11,10 @@ import {
   createEscrow,
   finishEscrow,
   cancelEscrow,
+  generateConditionPair,
+  createCondition,
+  validatePreimage,
+  createFreelancerEscrow,
 } from "./xrpl.js";
 
 dotenv.config();
@@ -213,7 +217,7 @@ app.post("/api/logout", (req, res) => {
 app.post("/escrow/create", requireAuth, async (req, res) => {
   let client;
   try {
-    const { payeeAddress, amountXrp, finishAfterUnix, cancelAfterUnix } =
+    const { payeeAddress, amountXrp, finishAfterUnix, cancelAfterUnix, condition } =
       req.body || {};
 
     // Basic validation - detailed validation happens in createEscrow
@@ -243,6 +247,7 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       amountXrp,
       finishAfterUnix,
       cancelAfterUnix,
+      condition: condition || null, // Optional conditional escrow
     });
 
     const txResult = result.result?.meta?.TransactionResult;
@@ -265,6 +270,8 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       txResult,
       amountXrp: Number(amountXrp),
       payeeAddress: payeeAddress.trim(),
+      hasCondition: !!condition,
+      condition: condition || null,
     });
   } catch (err) {
     // Handle validation errors with 400, server errors with 500
@@ -289,7 +296,7 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
 app.post("/escrow/finish", requireAuth, async (req, res) => {
   let client;
   try {
-    const { ownerAddress, offerSequence } = req.body || {};
+    const { ownerAddress, offerSequence, fulfillment } = req.body || {};
     
     if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
       return res.status(400).json({ error: "Missing or invalid ownerAddress" });
@@ -312,6 +319,7 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
       payeeWallet,
       ownerAddress: ownerAddress.trim(),
       offerSequence,
+      fulfillment: fulfillment || null, // Optional fulfillment for conditional escrows
     });
 
     const isSuccess = out.txResult === "tesSUCCESS";
@@ -418,6 +426,125 @@ app.get("/debug/payee", (req, res) => {
   const w = xrpl.Wallet.fromSeed(process.env.PAYEE_SEED);
   res.json({ payeeAddress: w.classicAddress });
 });
+
+// Generate condition-fulfillment pair for conditional escrows
+app.post("/escrow/generate-condition", requireAuth, (req, res) => {
+  try {
+    const { preimage } = req.body || {};
+    
+    let conditionPair;
+    if (preimage) {
+      // If preimage is provided, create condition from it
+      const condition = createCondition(preimage);
+      conditionPair = { preimage, condition };
+    } else {
+      // Generate a new random pair
+      conditionPair = generateConditionPair();
+    }
+    
+    return res.json({
+      ok: true,
+      ...conditionPair,
+      note: "Save the preimage securely! You'll need it to finish the conditional escrow.",
+    });
+  } catch (err) {
+    return res.status(400).json({
+      error: err.message || String(err),
+      ok: false,
+    });
+  }
+});
+
+// FREELANCER PAYMENT WORKFLOW
+// Create escrow for freelancer payment: client locks payment → freelancer delivers → client releases
+app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const { freelancerAddress, amountXrp, deadlineUnix, preimage } = req.body || {};
+
+    // Basic validation
+    if (!freelancerAddress || typeof freelancerAddress !== "string") {
+      return res.status(400).json({ error: "Missing or invalid freelancerAddress" });
+    }
+
+    if (!amountXrp) {
+      return res.status(400).json({ error: "Missing amountXrp" });
+    }
+
+    if (!deadlineUnix) {
+      return res.status(400).json({ error: "Missing deadlineUnix" });
+    }
+
+    const deadline = Number(deadlineUnix);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(deadline) || deadline <= nowUnix) {
+      return res.status(400).json({ 
+        error: "deadlineUnix must be a future timestamp" 
+      });
+    }
+
+    if (!process.env.PAYER_SEED) {
+      return res.status(500).json({ error: "Missing PAYER_SEED" });
+    }
+
+    const clientWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
+    client = await getClient();
+
+    const result = await createFreelancerEscrow({
+      client,
+      clientWallet,
+      freelancerAddress: freelancerAddress.trim(),
+      amountXrp,
+      deadlineUnix: deadline,
+      preimage: preimage || null,
+    });
+
+    const txResult = result.result.result?.meta?.TransactionResult;
+
+    if (txResult !== "tesSUCCESS") {
+      return res.status(400).json({
+        ok: false,
+        txResult,
+        engine_result: result.result.result?.engine_result,
+        engine_result_message: result.result.result?.engine_result_message,
+        txHash: result.result.result?.hash,
+        error: result.result.result?.engine_result_message || `Transaction failed: ${txResult}`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      txHash: result.result.result?.hash,
+      offerSequence: result.offerSequence,
+      txResult,
+      amountXrp: Number(amountXrp),
+      freelancerAddress: freelancerAddress.trim(),
+      preimage: result.preimage, // Client saves this to release payment when satisfied
+      condition: result.condition, // Can be shared with freelancer for transparency
+      deadlineUnix: result.deadlineUnix,
+      workflow: "freelancer_payment",
+      instructions: {
+        client: "Save the preimage securely. Provide it to release payment when work is satisfactory.",
+        freelancer: "Payment is locked. Deliver work. Client will release payment or auto-refund after deadline.",
+      },
+    });
+  } catch (err) {
+    const statusCode = err.message?.includes("Invalid") || 
+                       err.message?.includes("must be") ||
+                       err.message?.includes("Cannot")
+                       ? 400 : 500;
+    
+    return res.status(statusCode).json({ 
+      error: err.message || String(err),
+      ok: false,
+    });
+  } finally {
+    if (client) await client.disconnect();
+  }
+});
+
+// Note: Release happens when freelancer uses /escrow/finish with the preimage
+// This endpoint just validates and formats the release instruction
 
 /* ======================
    XLUSD BALANCE & BUY

@@ -1,10 +1,72 @@
 import xrpl from "xrpl";
+import crypto from "crypto";
 
 // Connect to XRPL Testnet
 export async function getClient() {
   const client = new xrpl.Client("wss://s.altnet.rippletest.net:51233");
   await client.connect();
   return client;
+}
+
+// ======================
+// CONDITIONAL ESCROW UTILITIES
+// ======================
+
+/**
+ * Generate a random preimage (secret) for conditional escrow
+ * @returns {string} Hex-encoded preimage (32 bytes = 64 hex chars)
+ */
+export function generatePreimage() {
+  return crypto.randomBytes(32).toString("hex").toUpperCase();
+}
+
+/**
+ * Create a condition (SHA-256 hash) from a preimage
+ * XRPL uses SHA-256 conditions in hex format
+ * @param {string} preimage - Hex-encoded preimage
+ * @returns {string} Hex-encoded condition
+ */
+export function createCondition(preimage) {
+  if (!preimage || typeof preimage !== "string") {
+    throw new Error("Preimage must be a non-empty string");
+  }
+  
+  // Remove any whitespace and convert to lowercase for hashing
+  const cleanPreimage = preimage.replace(/\s+/g, "").toLowerCase();
+  
+  // Convert hex string to buffer, hash it, and return hex
+  const preimageBuffer = Buffer.from(cleanPreimage, "hex");
+  const hash = crypto.createHash("sha256").update(preimageBuffer).digest();
+  
+  // Return as hex string (uppercase for XRPL compatibility)
+  return hash.toString("hex").toUpperCase();
+}
+
+/**
+ * Validate that a preimage matches a condition
+ * @param {string} preimage - Hex-encoded preimage
+ * @param {string} condition - Hex-encoded condition
+ * @returns {boolean} True if preimage matches condition
+ */
+export function validatePreimage(preimage, condition) {
+  try {
+    const computedCondition = createCondition(preimage);
+    return computedCondition.toUpperCase() === condition.toUpperCase();
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Generate a condition-fulfillment pair for conditional escrow
+ * Useful for applications where you want to create the condition now
+ * but provide the fulfillment later (e.g., hotel booking confirmation)
+ * @returns {{preimage: string, condition: string}}
+ */
+export function generateConditionPair() {
+  const preimage = generatePreimage();
+  const condition = createCondition(preimage);
+  return { preimage, condition };
 }
 
 // Convert XRP -> drops (XRPL uses drops in tx fields)
@@ -68,6 +130,7 @@ export async function createEscrow({
   amountXrp,
   finishAfterUnix,
   cancelAfterUnix,
+  condition, // Optional: hex-encoded crypto-condition (for conditional escrow)
 }) {
   // Validate inputs
   if (!payeeAddress || typeof payeeAddress !== "string" || payeeAddress.trim() === "") {
@@ -134,6 +197,26 @@ export async function createEscrow({
     throw new Error("Cannot create escrow to the same address (payer and payee cannot be the same)");
   }
 
+  // Validate condition if provided (must be valid hex, typically 64 chars for SHA-256)
+  let conditionHex = null;
+  if (condition) {
+    if (typeof condition !== "string" || condition.trim() === "") {
+      throw new Error("Condition must be a non-empty hex string");
+    }
+    
+    conditionHex = condition.replace(/\s+/g, "").toUpperCase();
+    
+    // XRPL conditions are typically SHA-256 hashes (64 hex chars)
+    // But we'll accept any valid hex string
+    if (!/^[0-9A-F]+$/i.test(conditionHex)) {
+      throw new Error("Condition must be a valid hex string");
+    }
+    
+    if (conditionHex.length < 32) {
+      throw new Error("Condition must be at least 32 hex characters (16 bytes)");
+    }
+  }
+
   // Build the EscrowCreate transaction
   const tx = {
     TransactionType: "EscrowCreate",
@@ -147,6 +230,11 @@ export async function createEscrow({
     tx.CancelAfter = toRippleTime(cancel);
   }
 
+  // Add Condition field for conditional escrow
+  if (conditionHex) {
+    tx.Condition = conditionHex;
+  }
+
   // Autofill fee + sequence
   const prepared = await client.autofill(tx);
 
@@ -158,8 +246,60 @@ export async function createEscrow({
   return { result, offerSequence: prepared.Sequence };
 }
 
+/**
+ * Create a freelancer payment escrow (specialized flow)
+ * Client locks payment → Freelancer delivers → Client releases OR auto-refund after deadline
+ * 
+ * @param {Object} params
+ * @param {Object} params.client - XRPL client
+ * @param {Object} params.clientWallet - Client's wallet (payer)
+ * @param {string} params.freelancerAddress - Freelancer's XRPL address (payee)
+ * @param {number} params.amountXrp - Amount in XRP
+ * @param {number} params.deadlineUnix - Deadline unix timestamp (when auto-refund becomes available)
+ * @param {string} params.preimage - Optional preimage (if not provided, generates one)
+ * @returns {Object} Escrow creation result with condition info
+ */
+export async function createFreelancerEscrow({
+  client,
+  clientWallet,
+  freelancerAddress,
+  amountXrp,
+  deadlineUnix,
+  preimage = null,
+}) {
+  // Generate condition-fulfillment pair if not provided
+  let conditionPair;
+  if (preimage) {
+    const condition = createCondition(preimage);
+    conditionPair = { preimage, condition };
+  } else {
+    conditionPair = generateConditionPair();
+  }
+
+  // Create escrow with condition
+  // FinishAfter is set to deadline - this allows:
+  // 1. Client can finish early by providing fulfillment (when satisfied)
+  // 2. Auto-refund becomes available after deadline if condition not fulfilled
+  const result = await createEscrow({
+    client,
+    payerWallet: clientWallet,
+    payeeAddress: freelancerAddress,
+    amountXrp,
+    finishAfterUnix: deadlineUnix, // Fallback time
+    cancelAfterUnix: deadlineUnix, // Can refund after deadline
+    condition: conditionPair.condition,
+  });
+
+  return {
+    ...result,
+    preimage: conditionPair.preimage,
+    condition: conditionPair.condition,
+    deadlineUnix,
+  };
+}
+
 // finish an escrow to payee
-export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSequence }) {
+export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSequence, fulfillment }) {
   // Validate inputs
   if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
     throw new Error("Invalid ownerAddress: must be a non-empty string");
@@ -192,28 +332,75 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
     );
   }
 
-  // 3) Enforce: FinishAfter has passed (if present)
-  if (escrow.FinishAfter) {
-    const nowUnix = Math.floor(Date.now() / 1000);
-    const finishUnix = rippleTimeToUnix(escrow.FinishAfter);
-    if (nowUnix < finishUnix) {
-      const remainingSeconds = finishUnix - nowUnix;
-      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+  // 3) Check if escrow has a Condition (conditional escrow)
+  const hasCondition = escrow.Condition && escrow.Condition.trim() !== "";
+  
+  // For conditional escrows, validate fulfillment is provided
+  if (hasCondition && !fulfillment) {
+    throw new Error(
+      `This escrow requires a fulfillment (preimage) to be finished. ` +
+      `The escrow has condition: ${escrow.Condition.substring(0, 16)}... ` +
+      `Please provide the fulfillment/preimage that matches this condition.`
+    );
+  }
+
+  // If fulfillment is provided, validate it matches the condition
+  if (hasCondition && fulfillment) {
+    const isValid = validatePreimage(fulfillment, escrow.Condition);
+    if (!isValid) {
       throw new Error(
-        `Too early to finish escrow. FinishAfter: ${new Date(finishUnix * 1000).toISOString()}, ` +
-        `Current time: ${new Date(nowUnix * 1000).toISOString()}, ` +
-        `Remaining: ${remainingMinutes} minute(s)`
+        `Invalid fulfillment. The provided preimage does not match the escrow condition. ` +
+        `Expected condition: ${escrow.Condition.substring(0, 16)}...`
       );
     }
   }
 
-  // 4) Submit EscrowFinish
+  // 4) Enforce: FinishAfter has passed (if present)
+  // For conditional escrows: FinishAfter is optional - fulfillment alone can finish it
+  // For time-based escrows: FinishAfter must pass before finishing
+  if (escrow.FinishAfter) {
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const finishUnix = rippleTimeToUnix(escrow.FinishAfter);
+    
+    if (hasCondition) {
+      // For conditional escrows: If FinishAfter has passed, fulfillment is optional
+      // If FinishAfter hasn't passed, fulfillment is required (which we already checked above)
+      // So we just log it for informational purposes
+      if (nowUnix < finishUnix && fulfillment) {
+        // Good - fulfillment provided before FinishAfter, allow it
+      } else if (nowUnix >= finishUnix) {
+        // FinishAfter passed, could finish without fulfillment, but we still validate it if provided
+      }
+    } else {
+      // Time-based escrow: Must wait for FinishAfter
+      if (nowUnix < finishUnix) {
+        const remainingSeconds = finishUnix - nowUnix;
+        const remainingMinutes = Math.ceil(remainingSeconds / 60);
+        throw new Error(
+          `Too early to finish escrow. FinishAfter: ${new Date(finishUnix * 1000).toISOString()}, ` +
+          `Current time: ${new Date(nowUnix * 1000).toISOString()}, ` +
+          `Remaining: ${remainingMinutes} minute(s)`
+        );
+      }
+    }
+  }
+
+  // 5) Submit EscrowFinish
   const tx = {
     TransactionType: "EscrowFinish",
     Account: payeeWallet.classicAddress,
     Owner: ownerAddress,
     OfferSequence: seq,
   };
+
+  // Add Fulfillment field if condition exists and fulfillment is provided
+  if (hasCondition && fulfillment) {
+    const fulfillmentHex = fulfillment.replace(/\s+/g, "").toUpperCase();
+    if (!/^[0-9A-F]+$/i.test(fulfillmentHex)) {
+      throw new Error("Fulfillment must be a valid hex string");
+    }
+    tx.Fulfillment = fulfillmentHex;
+  }
 
   const prepared = await client.autofill(tx);
   const signed = payeeWallet.sign(prepared);
