@@ -14,13 +14,36 @@ export function xrpToDrops(xrp) {
 
 // Read escrow from ledger (so we can check it exists + times)
 export async function getEscrowEntry({ client, ownerAddress, offerSequence }) {
-  const resp = await client.request({
-  command: "ledger_entry",
-  ledger_index: "validated", // or "current"
-  escrow: { owner: ownerAddress, seq: Number(offerSequence) },
-});
+  try {
+    const resp = await client.request({
+      command: "ledger_entry",
+      ledger_index: "validated", // or "current"
+      escrow: { owner: ownerAddress, seq: Number(offerSequence) },
+    });
 
-  return resp.result?.node; // throws if not found
+    if (!resp.result?.node) {
+      const error = new Error("Escrow entry not found");
+      error.error = "entryNotFound";
+      throw error;
+    }
+
+    return resp.result.node;
+  } catch (err) {
+    // If it's already our custom error, re-throw it
+    if (err.error === "entryNotFound") {
+      throw err;
+    }
+    
+    // Handle XRPL API errors
+    if (err.error === "entryNotFound" || err.data?.error === "entryNotFound") {
+      const error = new Error(`Escrow entry not found. Owner: ${ownerAddress}, Sequence: ${offerSequence}`);
+      error.error = "entryNotFound";
+      throw error;
+    }
+    
+    // Re-throw other errors with context
+    throw new Error(`Failed to fetch escrow entry: ${err.message || String(err)}`);
+  }
 }
 
 // Convert unix seconds -> ripple epoch seconds
@@ -46,17 +69,82 @@ export async function createEscrow({
   finishAfterUnix,
   cancelAfterUnix,
 }) {
+  // Validate inputs
+  if (!payeeAddress || typeof payeeAddress !== "string" || payeeAddress.trim() === "") {
+    throw new Error("Invalid payeeAddress: must be a non-empty string");
+  }
+
+  // Validate XRPL address format (basic check)
+  if (!/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/.test(payeeAddress)) {
+    throw new Error(`Invalid XRPL address format: ${payeeAddress}`);
+  }
+
+  // Validate amount
+  const amount = Number(amountXrp);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(`Invalid amountXrp: must be a positive number, got ${amountXrp}`);
+  }
+
+  // Minimum XRP amount is 0.000001 (1 drop = 0.000001 XRP)
+  if (amount < 0.000001) {
+    throw new Error(`Amount too small: minimum is 0.000001 XRP, got ${amount}`);
+  }
+
+  // Validate finishAfterUnix
+  const finish = Number(finishAfterUnix);
+  if (!Number.isFinite(finish) || finish <= 0) {
+    throw new Error(`Invalid finishAfterUnix: must be a positive unix timestamp, got ${finishAfterUnix}`);
+  }
+
+  const nowUnix = Math.floor(Date.now() / 1000);
+  if (finish <= nowUnix) {
+    throw new Error(
+      `finishAfterUnix must be in the future. Provided: ${new Date(finish * 1000).toISOString()}, ` +
+      `Current time: ${new Date(nowUnix * 1000).toISOString()}`
+    );
+  }
+
+  // Validate cancelAfterUnix if provided
+  let cancel = null;
+  if (cancelAfterUnix !== null && cancelAfterUnix !== undefined) {
+    cancel = Number(cancelAfterUnix);
+    if (!Number.isFinite(cancel) || cancel <= 0) {
+      throw new Error(`Invalid cancelAfterUnix: must be a positive unix timestamp, got ${cancelAfterUnix}`);
+    }
+
+    if (cancel <= nowUnix) {
+      throw new Error(
+        `cancelAfterUnix must be in the future. Provided: ${new Date(cancel * 1000).toISOString()}, ` +
+        `Current time: ${new Date(nowUnix * 1000).toISOString()}`
+      );
+    }
+
+    // CancelAfter must be after FinishAfter
+    if (cancel <= finish) {
+      throw new Error(
+        `cancelAfterUnix must be greater than finishAfterUnix. ` +
+        `Finish: ${new Date(finish * 1000).toISOString()}, ` +
+        `Cancel: ${new Date(cancel * 1000).toISOString()}`
+      );
+    }
+  }
+
+  // Prevent creating escrow to self
+  if (payeeAddress === payerWallet.classicAddress) {
+    throw new Error("Cannot create escrow to the same address (payer and payee cannot be the same)");
+  }
+
   // Build the EscrowCreate transaction
   const tx = {
     TransactionType: "EscrowCreate",
     Account: payerWallet.classicAddress,
     Destination: payeeAddress,
-    Amount: xrpToDrops(amountXrp),
-    FinishAfter: toRippleTime(finishAfterUnix),
+    Amount: xrpToDrops(amount),
+    FinishAfter: toRippleTime(finish),
   };
 
-  if (cancelAfterUnix) {
-    tx.CancelAfter = toRippleTime(cancelAfterUnix);
+  if (cancel) {
+    tx.CancelAfter = toRippleTime(cancel);
   }
 
   // Autofill fee + sequence
@@ -68,23 +156,39 @@ export async function createEscrow({
   // Submit and wait for validation
   const result = await client.submitAndWait(signed.tx_blob);
   return { result, offerSequence: prepared.Sequence };
-
 }
 
 // finish an escrow to payee
 export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSequence }) {
+  // Validate inputs
+  if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
+    throw new Error("Invalid ownerAddress: must be a non-empty string");
+  }
+  
   const seq = Number(offerSequence);
-  if (!ownerAddress || !Number.isFinite(seq)) {
-    throw new Error("Invalid ownerAddress or offerSequence");
+  if (!Number.isFinite(seq) || seq <= 0 || !Number.isInteger(seq)) {
+    throw new Error(`Invalid offerSequence: must be a positive integer, got ${offerSequence}`);
   }
 
   // 1) Fetch escrow from ledger (proves it exists, shows Destination & FinishAfter)
-  const escrow = await getEscrowEntry({ client, ownerAddress, offerSequence });
+  let escrow;
+  try {
+    escrow = await getEscrowEntry({ client, ownerAddress, offerSequence });
+  } catch (err) {
+    if (err.error === "entryNotFound" || err.message?.includes("entryNotFound")) {
+      throw new Error(`Escrow not found. Owner: ${ownerAddress}, Sequence: ${seq}`);
+    }
+    throw new Error(`Failed to fetch escrow entry: ${err.message || String(err)}`);
+  }
+
+  if (!escrow) {
+    throw new Error(`Escrow entry not found. Owner: ${ownerAddress}, Sequence: ${seq}`);
+  }
 
   // 2) Enforce: only Destination can finish (unless you implement Conditions/third-party)
   if (escrow.Destination !== payeeWallet.classicAddress) {
     throw new Error(
-      `Not destination. Escrow Destination=${escrow.Destination}, you=${payeeWallet.classicAddress}`
+      `Not authorized to finish this escrow. Escrow Destination: ${escrow.Destination}, Your address: ${payeeWallet.classicAddress}`
     );
   }
 
@@ -93,7 +197,13 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
     const nowUnix = Math.floor(Date.now() / 1000);
     const finishUnix = rippleTimeToUnix(escrow.FinishAfter);
     if (nowUnix < finishUnix) {
-      throw new Error(`Too early. FinishAfter=${finishUnix} (unix), now=${nowUnix}`);
+      const remainingSeconds = finishUnix - nowUnix;
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      throw new Error(
+        `Too early to finish escrow. FinishAfter: ${new Date(finishUnix * 1000).toISOString()}, ` +
+        `Current time: ${new Date(nowUnix * 1000).toISOString()}, ` +
+        `Remaining: ${remainingMinutes} minute(s)`
+      );
     }
   }
 
@@ -121,17 +231,36 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
 
 // refund an escrow to payer
 export async function cancelEscrow({ client, payerWallet, ownerAddress, offerSequence }) {
+  // Validate inputs
+  if (!ownerAddress || typeof ownerAddress !== "string" || ownerAddress.trim() === "") {
+    throw new Error("Invalid ownerAddress: must be a non-empty string");
+  }
+  
   const seq = Number(offerSequence);
-  if (!ownerAddress || !Number.isFinite(seq)) {
-    throw new Error("Invalid ownerAddress or offerSequence");
+  if (!Number.isFinite(seq) || seq <= 0 || !Number.isInteger(seq)) {
+    throw new Error(`Invalid offerSequence: must be a positive integer, got ${offerSequence}`);
   }
 
   // 1) Fetch escrow entry
-  const escrow = await getEscrowEntry({ client, ownerAddress, offerSequence });
+  let escrow;
+  try {
+    escrow = await getEscrowEntry({ client, ownerAddress, offerSequence });
+  } catch (err) {
+    if (err.error === "entryNotFound" || err.message?.includes("entryNotFound")) {
+      throw new Error(`Escrow not found. Owner: ${ownerAddress}, Sequence: ${seq}`);
+    }
+    throw new Error(`Failed to fetch escrow entry: ${err.message || String(err)}`);
+  }
+
+  if (!escrow) {
+    throw new Error(`Escrow entry not found. Owner: ${ownerAddress}, Sequence: ${seq}`);
+  }
 
   // 2) Enforce: only Owner can cancel
   if (ownerAddress !== payerWallet.classicAddress) {
-    throw new Error(`Not owner. Owner=${ownerAddress}, you=${payerWallet.classicAddress}`);
+    throw new Error(
+      `Not authorized to cancel this escrow. Escrow Owner: ${ownerAddress}, Your address: ${payerWallet.classicAddress}`
+    );
   }
 
   // 3) Enforce: CancelAfter has passed (if present)
@@ -139,12 +268,21 @@ export async function cancelEscrow({ client, payerWallet, ownerAddress, offerSeq
     const nowUnix = Math.floor(Date.now() / 1000);
     const cancelUnix = rippleTimeToUnix(escrow.CancelAfter);
     if (nowUnix < cancelUnix) {
-      throw new Error(`Too early. CancelAfter=${cancelUnix} (unix), now=${nowUnix}`);
+      const remainingSeconds = cancelUnix - nowUnix;
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      throw new Error(
+        `Too early to cancel escrow. CancelAfter: ${new Date(cancelUnix * 1000).toISOString()}, ` +
+        `Current time: ${new Date(nowUnix * 1000).toISOString()}, ` +
+        `Remaining: ${remainingMinutes} minute(s)`
+      );
     }
   } else {
     // If you didn't set CancelAfter, canceling is not allowed by time rule
     // (You could still cancel if escrow has Condition? but that's different.)
-    throw new Error("Escrow has no CancelAfter set; cancel not allowed by time.");
+    throw new Error(
+      "Escrow has no CancelAfter set; cancel not allowed by time. " +
+      "The escrow can only be finished by the destination address."
+    );
   }
 
   // 4) Submit EscrowCancel (signed by payer/owner)
