@@ -57,7 +57,7 @@ export function createCondition(preimage) {
 /**
  * Validate that a preimage matches a condition
  * @param {string} preimage - Hex-encoded preimage
- * @param {string} condition - Hex-encoded condition
+ * @param {string} condition - Hex-encoded crypto-condition
  * @returns {boolean} True if preimage matches condition
  */
 export function validatePreimage(preimage, condition) {
@@ -258,8 +258,8 @@ export async function createEscrow({
       throw new Error("Condition must be a valid hex string");
     }
     
-    // XRPL PREIMAGE-SHA-256 conditions are longer than 64 chars (they include type info)
-    // The format is: A0258020[32-byte hash]810100
+    // XRPL PREIMAGE-SHA-256 conditions from five-bells-condition are typically 80+ hex chars
+    // Format: A0258020[32-byte hash]810100
     // Minimum length should be around 80+ characters for proper format
     if (conditionHex.length < 64) {
       throw new Error(
@@ -443,6 +443,7 @@ export async function createFreelancerEscrow({
   }
 
   // Create escrow with condition
+<<<<<<< HEAD
   // For conditional escrows:
   // - Client can finish anytime by providing fulfillment (condition)
   // - FinishAfter is a fallback time (set to allow early finishing)
@@ -458,6 +459,12 @@ export async function createFreelancerEscrow({
     finishAfterUnix = deadlineUnix - 60; // At least 1 minute before deadline
   }
   
+=======
+  // FinishAfter is set to deadline - this allows:
+  // 1. Client can finish early by providing fulfillment (when satisfied)
+  // 2. Auto-refund becomes available after deadline if condition not fulfilled
+  // Note: cancelAfterUnix must be > finishAfterUnix, so we add 1 second to deadline
+>>>>>>> 37db7b2a52ef8bf24def37ab9da7b8a02cc7f554
   const result = await createEscrow({
     client,
     payerWallet: clientWallet,
@@ -466,6 +473,61 @@ export async function createFreelancerEscrow({
     finishAfterUnix: finishAfterUnix, // Fallback time (allows early finishing with condition)
     cancelAfterUnix: deadlineUnix, // Can refund after deadline
     condition: conditionPair.condition,
+  });
+
+  return {
+    ...result,
+    preimage: conditionPair.preimage,
+    condition: conditionPair.condition,
+    deadlineUnix,
+  };
+}
+
+/**
+ * Create a QA escrow (Quality Assurance with requirements checklist)
+ * Client locks payment with requirements → Service provider delivers → 
+ * AI verifies requirements → Service provider claims payment (before deadline) OR client refunds (after deadline)
+ * 
+ * @param {Object} params
+ * @param {Object} params.client - XRPL client
+ * @param {Object} params.clientWallet - Client's wallet (payer)
+ * @param {string} params.providerAddress - Service provider's XRPL address (payee)
+ * @param {number} params.amountXrp - Amount in XRP
+ * @param {number} params.deadlineUnix - Deadline unix timestamp (when refund becomes available)
+ * @param {string} params.preimage - Optional preimage (if not provided, generates one)
+ * @returns {Object} Escrow creation result with condition info
+ */
+export async function createQAEscrow({
+  client,
+  clientWallet,
+  providerAddress,
+  amountXrp,
+  deadlineUnix,
+  preimage = null,
+}) {
+  // Generate condition-fulfillment pair if not provided
+  let conditionPair;
+  if (preimage) {
+    const condition = createCondition(preimage);
+    conditionPair = { preimage, condition };
+  } else {
+    conditionPair = generateConditionPair();
+  }
+
+  // Create escrow with condition and deadline
+  // Logic:
+  // - FinishAfter = deadline (service provider can finish before deadline with preimage)
+  // - CancelAfter = deadline + 1 (client can refund after deadline)
+  // - Service provider needs preimage (automatically provided by server when AI verifies) to finish before deadline
+  // - After deadline, only client can cancel/refund
+  const result = await createEscrow({
+    client,
+    payerWallet: clientWallet,
+    payeeAddress: providerAddress,
+    amountXrp,
+    finishAfterUnix: deadlineUnix, // Deadline - service provider can finish before this with preimage
+    cancelAfterUnix: deadlineUnix + 1, // After deadline - client can refund
+    condition: conditionPair.condition, // Preimage required to finish
   });
 
   return {
@@ -560,21 +622,29 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
       }
     }
 
-  // 4) Enforce: FinishAfter has passed (if present)
-  // For conditional escrows: FinishAfter is optional - fulfillment alone can finish it
-  // For time-based escrows: FinishAfter must pass before finishing
+  // 4) Enforce deadline/FinishAfter rules
   if (escrow.FinishAfter) {
     const nowUnix = Math.floor(Date.now() / 1000);
     const finishUnix = rippleTimeToUnix(escrow.FinishAfter);
     
     if (hasCondition) {
-      // For conditional escrows: If FinishAfter has passed, fulfillment is optional
-      // If FinishAfter hasn't passed, fulfillment is required (which we already checked above)
-      // So we just log it for informational purposes
-      if (nowUnix < finishUnix && fulfillment) {
-        // Good - fulfillment provided before FinishAfter, allow it
-      } else if (nowUnix >= finishUnix) {
-        // FinishAfter passed, could finish without fulfillment, but we still validate it if provided
+      // For conditional escrows with deadline:
+      // - Can finish BEFORE deadline with fulfillment (preimage)
+      // - Cannot finish AFTER deadline (deadline passed, client can refund instead)
+      if (nowUnix >= finishUnix) {
+        throw new Error(
+          `Deadline has passed. Cannot finish escrow after deadline. ` +
+          `Deadline: ${new Date(finishUnix * 1000).toISOString()}, ` +
+          `Current time: ${new Date(nowUnix * 1000).toISOString()}. ` +
+          `The client can now refund the payment.`
+        );
+      }
+      // Before deadline: require fulfillment (preimage) - already validated above
+      if (!fulfillment) {
+        throw new Error(
+          `Fulfillment (preimage) is required to finish this conditional escrow. ` +
+          `You must provide the preimage that matches the escrow condition.`
+        );
       }
     } else {
       // Time-based escrow: Must wait for FinishAfter

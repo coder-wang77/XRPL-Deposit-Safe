@@ -319,35 +319,48 @@ buyBtn.addEventListener("click", () => {
 });
 
 /* ======================
-   FREELANCER PAYMENT WORKFLOW
+   QUALITY ASSURANCE ESCROW WORKFLOW
 ====================== */
-const btnFreelancerCreate = document.getElementById("btnFreelancerCreate");
-const freelancerInput = document.getElementById("f_freelancer");
-const fAmountInput = document.getElementById("f_amount");
-const fDeadlineInput = document.getElementById("f_deadline");
-const resFreelancerCreate = document.getElementById("resFreelancerCreate");
+const btnQACreate = document.getElementById("btnQACreate");
+const qaProviderInput = document.getElementById("qa_provider");
+const qaAmountInput = document.getElementById("qa_amount");
+const qaDeadlineInput = document.getElementById("qa_deadline");
+const qaChecklist = document.getElementById("qa_checklist");
+const btnAddRequirement = document.getElementById("btnAddRequirement");
+const resQACreate = document.getElementById("resQACreate");
+const qaApprovalSection = document.getElementById("qa_approvalSection");
+const qaPreimageInput = document.getElementById("qa_preimage");
 
-const btnFreelancerRelease = document.getElementById("btnFreelancerRelease");
-const btnFreelancerRefund = document.getElementById("btnFreelancerRefund");
-const fReleaseOwnerInput = document.getElementById("f_release_owner");
-const fReleaseSeqInput = document.getElementById("f_release_seq");
-const fPreimageSection = document.getElementById("f_preimageSection");
-const fPreimageInput = document.getElementById("f_preimage");
-const btnCopyPreimage = document.getElementById("btnCopyPreimage");
-const resFreelancerRelease = document.getElementById("resFreelancerRelease");
+const btnQALoadRequirements = document.getElementById("btnQALoadRequirements");
+const btnQAApprove = document.getElementById("btnQAApprove");
+const btnQARefund = document.getElementById("btnQARefund");
+const qaApproveOwnerInput = document.getElementById("qa_approve_owner");
+const qaApproveSeqInput = document.getElementById("qa_approve_seq");
+const qaVerifyChecklist = document.getElementById("qa_verify_checklist");
+const resQAApprove = document.getElementById("resQAApprove");
 
-// Store preimage when escrow is created
-let savedPreimages = {}; // {sequence: preimage}
+// Service Provider Claim
+const btnQAClaim = document.getElementById("btnQAClaim");
+const qaClaimOwnerInput = document.getElementById("qa_claim_owner");
+const qaClaimSeqInput = document.getElementById("qa_claim_seq");
+const qaClaimPreimageInput = document.getElementById("qa_claim_preimage");
+const resQAClaim = document.getElementById("resQAClaim");
 
-// Set minimum datetime for deadline (5 minutes from now)
+// Store QA escrow data (sequence -> requirements)
+const qaEscrowData = {};
+
+// Set minimum datetime for deadline (5 minutes from now) - Freelancer escrow
 const minDeadline = new Date(Date.now() + 5 * 60 * 1000);
 fDeadlineInput.min = minDeadline.toISOString().slice(0, 16);
 
-// Set default deadline to 1 hour from now
+// Set default deadline to 1 hour from now - Freelancer escrow
 const defaultDeadline = new Date(Date.now() + 60 * 60 * 1000);
 fDeadlineInput.value = defaultDeadline.toISOString().slice(0, 16);
 
-// Address validation
+// Set minimum datetime for deadline - QA escrow
+qaDeadlineInput.min = new Date().toISOString().slice(0, 16);
+
+// Address validation - Freelancer escrow
 freelancerInput.addEventListener("blur", () => {
   const address = freelancerInput.value.trim();
   if (address && !isValidXRPLAddress(address)) {
@@ -357,68 +370,88 @@ freelancerInput.addEventListener("blur", () => {
   }
 });
 
-fReleaseOwnerInput.addEventListener("blur", () => {
-  const address = fReleaseOwnerInput.value.trim();
+// Add requirement input - QA escrow
+let requirementCount = 1;
+btnAddRequirement.addEventListener("click", () => {
+  requirementCount++;
+  const item = document.createElement("div");
+  item.className = "qa-checklist-item";
+  item.style.marginBottom = "8px";
+  item.innerHTML = `
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <input type="text" placeholder="Requirement ${requirementCount}" 
+             class="qa-requirement-input" 
+             style="flex: 1; padding: 8px; border: none; border-radius: 4px; background: rgba(255,255,255,0.9); color: #1a202c;" />
+      <button type="button" class="qa-remove-requirement" 
+              style="padding: 8px 12px; background: rgba(239,68,68,0.8); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+        ✕
+      </button>
+    </div>
+  `;
+  qaChecklist.appendChild(item);
+  
+  // Add remove functionality
+  item.querySelector(".qa-remove-requirement").addEventListener("click", () => {
+    item.remove();
+  });
+});
+
+// Address validation
+qaProviderInput.addEventListener("blur", () => {
+  const address = qaProviderInput.value.trim();
   if (address && !isValidXRPLAddress(address)) {
-    fReleaseOwnerInput.style.borderColor = "#ef4444";
+    qaProviderInput.style.borderColor = "#ef4444";
   } else {
-    fReleaseOwnerInput.style.borderColor = "";
+    qaProviderInput.style.borderColor = "";
   }
 });
 
-// Copy preimage to clipboard
-btnCopyPreimage.addEventListener("click", () => {
-  const preimage = fPreimageInput.value;
-  if (preimage) {
-    navigator.clipboard?.writeText(preimage).then(() => {
-      btnCopyPreimage.textContent = "✅ Copied!";
-      setTimeout(() => {
-        btnCopyPreimage.textContent = "📋 Copy Preimage";
-      }, 2000);
-    });
-  }
-});
-
-// Create freelancer payment escrow
-btnFreelancerCreate.addEventListener("click", async () => {
-  const freelancerAddress = freelancerInput.value.trim();
-  const amountXrp = fAmountInput.value.trim();
-  const deadlineLocal = fDeadlineInput.value;
-
-  resFreelancerCreate.style.display = "none";
-
+// Create QA Escrow
+btnQACreate.addEventListener("click", async () => {
+  const providerAddress = qaProviderInput.value.trim();
+  const amountXrp = qaAmountInput.value.trim();
+  const deadlineLocal = qaDeadlineInput.value;
+  
+  // Get requirements
+  const requirementInputs = qaChecklist.querySelectorAll(".qa-requirement-input");
+  const requirements = Array.from(requirementInputs)
+    .map(input => input.value.trim())
+    .filter(req => req.length > 0);
+  
+  resQACreate.style.display = "none";
+  
   // Validation
-  if (!freelancerAddress) {
-    show(resFreelancerCreate, false, "❌ Please enter freelancer address");
-    freelancerInput.focus();
+  if (!providerAddress) {
+    show(resQACreate, false, "❌ Please enter service provider address");
+    qaProviderInput.focus();
     return;
   }
-
-  if (!isValidXRPLAddress(freelancerAddress)) {
-    show(resFreelancerCreate, false, `❌ Invalid XRPL address: ${formatAddress(freelancerAddress)}`);
-    freelancerInput.focus();
+  
+  if (!isValidXRPLAddress(providerAddress)) {
+    show(resQACreate, false, `❌ Invalid XRPL address: ${formatAddress(providerAddress)}`);
+    qaProviderInput.focus();
     return;
   }
-
+  
   if (!amountXrp) {
-    show(resFreelancerCreate, false, "❌ Please enter payment amount");
-    fAmountInput.focus();
+    show(resQACreate, false, "❌ Please enter payment amount");
+    qaAmountInput.focus();
     return;
   }
-
+  
   const amount = parseFloat(amountXrp);
-  if (!Number.isFinite(amount) || amount <= 0 || amount < 0.000001) {
-    show(resFreelancerCreate, false, "❌ Amount must be at least 0.000001 XRP");
-    fAmountInput.focus();
+  if (!Number.isFinite(amount) || amount < 0.000001) {
+    show(resQACreate, false, "❌ Amount must be at least 0.000001 XRP");
+    qaAmountInput.focus();
     return;
   }
-
+  
   if (!deadlineLocal) {
-    show(resFreelancerCreate, false, "❌ Please select a deadline");
-    fDeadlineInput.focus();
+    show(resQACreate, false, "❌ Please select a deadline");
+    qaDeadlineInput.focus();
     return;
   }
-
+  
   const deadlineUnix = toUnixSeconds(deadlineLocal);
   const nowUnix = Math.floor(Date.now() / 1000);
   const minDeadlineUnix = nowUnix + 300; // Require at least 5 minutes in the future
@@ -435,138 +468,382 @@ btnFreelancerCreate.addEventListener("click", async () => {
     fDeadlineInput.focus();
     return;
   }
-
-  setButtonLoading(btnFreelancerCreate, true, "⏳ Locking Payment...");
-
+  
+  // Requirements are optional - no validation needed
+  
+  setButtonLoading(btnQACreate, true, "⏳ Creating QA Escrow...");
+  
   try {
-    const res = await fetch(`${API}/escrow/freelancer/create`, {
+    const res = await fetch(`${API}/escrow/qa/create`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({
-        freelancerAddress,
+        providerAddress,
         amountXrp: amount,
         deadlineUnix,
+        requirements, // Send requirements to store
       }),
     });
-
+    
     const data = await res.json();
-
+    
     if (!res.ok || !data.ok) {
-      show(resFreelancerCreate, false, `❌ Failed to lock payment\n${data.error || "Unknown error"}`);
+      show(resQACreate, false, `❌ Failed to create QA escrow\n${data.error || "Unknown error"}`);
       return;
     }
-
-    // Store preimage by sequence
-    savedPreimages[data.offerSequence] = data.preimage;
     
-    // Show preimage section
-    fPreimageInput.value = data.preimage;
-    fPreimageSection.style.display = "block";
-    fReleaseSeqInput.value = data.offerSequence;
-    fReleaseOwnerInput.value = ""; // Will need to fill manually or get from response
-
+    // Store requirements with sequence for later retrieval
+    qaEscrowData[data.offerSequence] = {
+      requirements,
+      preimage: data.preimage,
+      condition: data.condition,
+    };
+    
+    // Show success
     const txHash = data.txHash || "N/A";
     const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    const successMsg = `✅ Payment Locked Successfully!\n\n` +
+    const successMsg = `✅ QA Escrow Created!\n\n` +
       `Amount: ${amount} XRP\n` +
-      `Freelancer: ${formatAddress(freelancerAddress)}\n` +
+      `Provider: ${formatAddress(providerAddress)}\n` +
       `Sequence: ${data.offerSequence}\n` +
       `Deadline: ${formatDateTime(deadlineUnix)}\n` +
-      `\n💡 Workflow:\n` +
-      `1. Freelancer delivers work\n` +
-      `2. If satisfied: Share preimage with freelancer → They claim payment\n` +
-      `3. If not satisfied by deadline: Click "Refund" to get money back\n` +
-      `\nTransaction: ${txHash}\n${txUrl}`;
+      `Requirements: ${requirements.length} item(s)\n\n` +
+      `Transaction: ${txHash}\n${txUrl}`;
     
-    show(resFreelancerCreate, true, successMsg);
+    show(resQACreate, true, successMsg);
+    
+    // Reset form
+    setTimeout(() => {
+      qaProviderInput.value = "";
+      qaAmountInput.value = "";
+      qaDeadlineInput.value = "";
+      qaChecklist.innerHTML = `
+        <div class="qa-checklist-item" style="margin-bottom: 8px;">
+          <input type="text" placeholder="Requirement 1" 
+                 class="qa-requirement-input" 
+                 style="width: 100%; padding: 8px; border: none; border-radius: 4px; background: rgba(255,255,255,0.9); color: #1a202c;" />
+        </div>
+      `;
+      requirementCount = 1;
+      resQACreate.style.display = "none";
+    }, 20000);
+    
     loadStatistics();
     loadXRPWalletBalance();
-
+    
   } catch (err) {
-    console.error("Create freelancer escrow error:", err);
-    show(resFreelancerCreate, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
+    console.error("Create QA escrow error:", err);
+    show(resQACreate, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
   } finally {
-    setButtonLoading(btnFreelancerCreate, false);
+    setButtonLoading(btnQACreate, false);
   }
 });
 
-// Release payment (client shares preimage for freelancer to claim)
-btnFreelancerRelease.addEventListener("click", async () => {
-  const ownerAddress = fReleaseOwnerInput.value.trim();
-  const seqValue = fReleaseSeqInput.value.trim();
-  const preimage = savedPreimages[seqValue] || fPreimageInput.value.trim();
+// Load requirements for verification
+btnQALoadRequirements.addEventListener("click", async () => {
+  const seq = qaApproveSeqInput.value.trim();
+  
+  if (!seq) {
+    alert("Please enter escrow sequence number");
+    return;
+  }
+  
+  // Check if we have it stored locally
+  if (qaEscrowData[seq]) {
+    const data = qaEscrowData[seq];
+    displayRequirementsForVerification(data.requirements);
+    return;
+  }
+  
+  // Try to fetch from server
+  try {
+    const res = await fetch(`${API}/escrow/qa/requirements/${seq}`, {
+      credentials: "include",
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      if (data.requirements !== undefined) {
+        qaEscrowData[seq] = data;
+        displayRequirementsForVerification(
+          data.requirements || [], 
+          data.verifiedRequirements || {},
+          data.aiVerificationStatus || "pending",
+          data.aiSummary || null
+        );
+      } else {
+        qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Requirements not found for this escrow.</p>`;
+      }
+    } else {
+      qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Could not load requirements. They may not be stored.</p>`;
+    }
+  } catch (err) {
+    qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Error loading requirements.</p>`;
+  }
+});
 
-  resFreelancerRelease.style.display = "none";
+function displayRequirementsForVerification(requirements, verifiedRequirements = {}, aiStatus = "pending", aiSummary = null) {
+  if (!requirements || requirements.length === 0) {
+    qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7); font-size: 12px;">No requirements for this escrow.</p>`;
+    return;
+  }
+  
+  let statusBadge = "";
+  if (aiStatus === "in_progress") {
+    statusBadge = `<div style="padding: 8px; background: rgba(59,130,246,0.3); border-radius: 4px; margin-bottom: 12px; text-align: center;">
+      <span style="color: #3b82f6;">🤖 AI Verification in Progress...</span>
+    </div>`;
+  } else if (aiStatus === "completed") {
+    const allVerified = Object.values(verifiedRequirements).every(v => v.verified === true);
+    statusBadge = `<div style="padding: 8px; background: ${allVerified ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}; border-radius: 4px; margin-bottom: 12px;">
+      <div style="color: ${allVerified ? '#10b981' : '#f59e0b'}; font-weight: 600; margin-bottom: 4px;">🤖 AI Verification Complete</div>
+      ${aiSummary ? `<div style="font-size: 11px; color: rgba(255,255,255,0.8);">${aiSummary}</div>` : ''}
+    </div>`;
+  } else if (aiStatus === "error") {
+    statusBadge = `<div style="padding: 8px; background: rgba(239,68,68,0.3); border-radius: 4px; margin-bottom: 12px; text-align: center;">
+      <span style="color: #ef4444;">❌ AI Verification Error</span>
+    </div>`;
+  }
+  
+  const requirementsHtml = requirements.map((req, idx) => {
+    const verification = verifiedRequirements[idx];
+    const isVerified = verification?.verified === true;
+    const confidence = verification?.confidence || 0;
+    const reason = verification?.reason || "";
+    
+    return `
+      <div style="margin-bottom: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 4px; ${isVerified ? 'border-left: 3px solid #10b981;' : 'border-left: 3px solid #f59e0b;'}">
+        <div style="display: flex; align-items: start; gap: 8px; margin-bottom: 4px;">
+          <span style="font-size: 18px;">${isVerified ? '✅' : '⏳'}</span>
+          <div style="flex: 1;">
+            <div style="color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 500; margin-bottom: 4px;">${req}</div>
+            ${verification ? `
+              <div style="font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 4px;">
+                ${reason}
+              </div>
+              <div style="font-size: 10px; color: rgba(255,255,255,0.6); margin-top: 2px;">
+                Confidence: ${(confidence * 100).toFixed(1)}%
+              </div>
+            ` : '<div style="font-size: 11px; color: rgba(255,255,255,0.6);">AI verification pending...</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  
+  qaVerifyChecklist.innerHTML = statusBadge + requirementsHtml;
+}
 
+// Approve and release payment
+// Trigger AI Verification
+btnQATriggerAI.addEventListener("click", async () => {
+  const ownerAddress = qaApproveOwnerInput.value.trim();
+  const seqValue = qaApproveSeqInput.value.trim();
+  
+  resQAApprove.style.display = "none";
+  
   if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
-    show(resFreelancerRelease, false, "❌ Invalid owner address");
-    fReleaseOwnerInput.focus();
+    show(resQAApprove, false, "❌ Invalid owner address");
+    return;
+  }
+  
+  if (!seqValue) {
+    show(resQAApprove, false, "❌ Invalid sequence number");
+    return;
+  }
+  
+  if (!confirm(`Re-run AI verification?\n\nThis will trigger the AI checker to verify all requirements again.\n\nSequence: ${seqValue}`)) {
+    return;
+  }
+  
+  setButtonLoading(btnQATriggerAI, true, "⏳ Running AI Verification...");
+  
+  try {
+    const res = await fetch(`${API}/escrow/qa/ai-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        sequence: Number(seqValue),
+      }),
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok || !data.ok) {
+      show(resQAApprove, false, `❌ AI verification failed\n${data.error || "Unknown error"}`);
+      return;
+    }
+    
+    show(resQAApprove, true, 
+      `🤖 AI Verification Complete!\n\n` +
+      `${data.summary}\n\n` +
+      `Verified: ${data.verifiedCount}/${data.totalCount} requirements\n` +
+      `Average Confidence: ${(data.avgConfidence * 100).toFixed(1)}%\n\n` +
+      `${data.allVerified ? "✅ All requirements verified! Service provider can now claim payment." : "⚠️ Some requirements need attention."}`
+    );
+    
+    // Reload requirements to show updated status
+    setTimeout(() => {
+      btnQALoadRequirements.click();
+    }, 2000);
+
+  } catch (err) {
+    console.error("AI verification error:", err);
+    show(resQAApprove, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
+  } finally {
+    setButtonLoading(btnQATriggerAI, false);
+  }
+});
+
+// Old verify function removed - AI handles verification automatically
+  const ownerAddress = qaApproveOwnerInput.value.trim();
+  const seqValue = qaApproveSeqInput.value.trim();
+  
+  resQAApprove.style.display = "none";
+  
+  if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
+    show(resQAApprove, false, "❌ Invalid owner address");
+    return;
+  }
+  
+  if (!seqValue) {
+    show(resQAApprove, false, "❌ Invalid sequence number");
+    return;
+  }
+  
+  if (!confirm(`Re-run AI verification?\n\nThis will trigger the AI checker to verify all requirements again.\n\nSequence: ${seqValue}`)) {
     return;
   }
 
+  setButtonLoading(btnQATriggerAI, true, "⏳ Running AI Verification...");
+
+  try {
+    const res = await fetch(`${API}/escrow/qa/ai-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        sequence: Number(seqValue),
+      }),
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok || !data.ok) {
+      show(resQAApprove, false, `❌ AI verification failed\n${data.error || "Unknown error"}`);
+      return;
+    }
+    
+    show(resQAApprove, true, 
+      `🤖 AI Verification Complete!\n\n` +
+      `${data.summary}\n\n` +
+      `Verified: ${data.verifiedCount}/${data.totalCount} requirements\n` +
+      `Average Confidence: ${(data.avgConfidence * 100).toFixed(1)}%\n\n` +
+      `${data.allVerified ? "✅ All requirements verified! Service provider can now claim payment." : "⚠️ Some requirements need attention."}`
+    );
+    
+    // Reload requirements to show updated status
+    setTimeout(() => {
+      btnQALoadRequirements.click();
+    }, 2000);
+
+  } catch (err) {
+    console.error("AI verification error:", err);
+    show(resQAApprove, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
+  } finally {
+    setButtonLoading(btnQATriggerAI, false);
+  }
+});
+
+// Service Provider: Claim Payment
+btnQAClaim.addEventListener("click", async () => {
+  const ownerAddress = qaClaimOwnerInput.value.trim();
+  const seqValue = qaClaimSeqInput.value.trim();
+  
+  resQAClaim.style.display = "none";
+  
+  if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
+    show(resQAClaim, false, "❌ Invalid owner address");
+    return;
+  }
+  
   if (!seqValue || !Number.isFinite(Number(seqValue))) {
-    show(resFreelancerRelease, false, "❌ Invalid sequence number");
-    fReleaseSeqInput.focus();
+    show(resQAClaim, false, "❌ Invalid sequence number");
     return;
   }
-
-  if (!preimage) {
-    show(resFreelancerRelease, false, "❌ No preimage found. Please enter the preimage from escrow creation.");
-    fPreimageInput.focus();
+  
+  if (!confirm(`Claim payment?\n\nThis will finish the escrow and send the payment to your wallet.\n\nYou can only claim BEFORE the deadline passes.`)) {
     return;
   }
-
-  // Copy to clipboard automatically
-  navigator.clipboard?.writeText(preimage).then(() => {
-    // Show instructions for sharing
-    show(resFreelancerRelease, true, 
-      `✅ Preimage Copied to Clipboard!\n\n` +
-      `📋 Share this preimage with your freelancer:\n\n` +
-      `Preimage: ${preimage.substring(0, 40)}...\n\n` +
-      `How to Share:\n` +
-      `1. Send the preimage to your freelancer securely\n` +
-      `2. Freelancer uses it to claim payment:\n` +
-      `   • Go to "Flow B - Release Deposit"\n` +
-      `   • Enter Owner: ${formatAddress(ownerAddress)}\n` +
-      `   • Enter Sequence: ${seqValue}\n` +
-      `   • Paste Fulfillment: ${preimage.substring(0, 20)}...\n` +
-      `   • Click "Claim Deposit"\n\n` +
-      `Once freelancer claims, payment is released! 💰`
+  
+  setButtonLoading(btnQAClaim, true, "⏳ Claiming Payment...");
+  
+  try {
+    // Use the new QA claim endpoint (automatically handles preimage if requirements exist)
+    const res = await fetch(`${API}/escrow/qa/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        ownerAddress,
+        offerSequence: Number(seqValue),
+      }),
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok || !data.ok) {
+      show(resQAClaim, false, `❌ Failed to claim payment\n${data.error || "Unknown error"}\n\nNote: You can only claim before the deadline passes. If escrow has requirements, all must be verified by client first.`);
+      return;
+    }
+    
+    const txHash = data.txHash || "N/A";
+    const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
+    show(resQAClaim, true, 
+      `✅ Payment Claimed Successfully!\n\n` +
+      `The payment has been released to your wallet.\n\n` +
+      `Transaction: ${txHash}\n${txUrl}`
     );
-  }).catch(() => {
-    // If clipboard fails, just show the message
-    show(resFreelancerRelease, true, 
-      `✅ Ready to Share Preimage!\n\n` +
-      `Preimage: ${preimage}\n\n` +
-      `Send this to your freelancer. They'll use it in "Flow B - Release Deposit" to claim payment.`
-    );
-  });
+    
+    // Clear form
+    qaClaimOwnerInput.value = "";
+    qaClaimSeqInput.value = "";
+    loadStatistics();
+    loadXRPWalletBalance();
+    
+  } catch (err) {
+    console.error("Claim payment error:", err);
+    show(resQAClaim, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
+  } finally {
+    setButtonLoading(btnQAClaim, false);
+  }
 });
 
 // Refund after deadline
-btnFreelancerRefund.addEventListener("click", async () => {
-  const ownerAddress = fReleaseOwnerInput.value.trim();
-  const seqValue = fReleaseSeqInput.value.trim();
-
+btnQARefund.addEventListener("click", async () => {
+  const ownerAddress = qaApproveOwnerInput.value.trim();
+  const seqValue = qaApproveSeqInput.value.trim();
+  
+  resQAApprove.style.display = "none";
+  
   if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
-    show(resFreelancerRelease, false, "❌ Invalid owner address");
-    fReleaseOwnerInput.focus();
+    show(resQAApprove, false, "❌ Invalid owner address");
     return;
   }
-
-  if (!seqValue || !Number.isFinite(Number(seqValue))) {
-    show(resFreelancerRelease, false, "❌ Invalid sequence number");
-    fReleaseSeqInput.focus();
+  
+  if (!seqValue) {
+    show(resQAApprove, false, "❌ Invalid sequence number");
     return;
   }
-
-  if (!confirm(`Are you sure you want to refund?\n\nThis will cancel the escrow and return funds to you.\n\nOnly works after the deadline has passed.`)) {
+  
+  if (!confirm(`Refund payment?\n\nThis will cancel the escrow and return funds to you.\n\nOnly works after the deadline has passed.`)) {
     return;
   }
-
-  setButtonLoading(btnFreelancerRefund, true, "⏳ Processing Refund...");
-
+  
+  setButtonLoading(btnQARefund, true, "⏳ Processing Refund...");
+  
   try {
     const res = await fetch(`${API}/escrow/cancel`, {
       method: "POST",
@@ -577,27 +854,29 @@ btnFreelancerRefund.addEventListener("click", async () => {
         offerSequence: Number(seqValue),
       }),
     });
-
+    
     const data = await res.json();
-
+    
     if (!res.ok || !data.ok) {
-      show(resFreelancerRelease, false, `❌ Refund failed\n${data.error || "Unknown error"}\n\nNote: Refund only works after the deadline has passed.`);
+      show(resQAApprove, false, `❌ Refund failed\n${data.error || "Unknown error"}\n\nNote: Refund only works after the deadline has passed.`);
       return;
     }
-
+    
     const txHash = data.txHash || "N/A";
     const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    show(resFreelancerRelease, true, 
+    show(resQAApprove, true, 
       `✅ Refund Successful!\n\n` +
-      `Funds have been returned to your account.\n` +
+      `Funds have been returned to your account.\n\n` +
       `Transaction: ${txHash}\n${txUrl}`
     );
+    
     loadStatistics();
-
+    loadXRPWalletBalance();
+    
   } catch (err) {
-    console.error("Refund error:", err);
-    show(resFreelancerRelease, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
+    console.error("Refund QA escrow error:", err);
+    show(resQAApprove, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
   } finally {
-    setButtonLoading(btnFreelancerRefund, false);
+    setButtonLoading(btnQARefund, false);
   }
 });
