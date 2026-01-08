@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | Profile</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Profile</h2>
+          <p class="muted">Your account information</p>
+        </div>
+      </div>
+
+      <div class="profile-container">
+        <div class="profile-header">
+          <div class="profile-avatar-large">
+            <span id="profileInitial">U</span>
+          </div>
+          <div class="profile-info">
+            <h2 id="profileName">Loading...</h2>
+            <p class="profile-email" id="profileEmail">...</p>
+            <div class="profile-stats">
+              <div class="profile-stat">
+                <div class="stat-number" id="profileEscrows">0</div>
+                <div class="stat-label">Escrows</div>
+              </div>
+              <div class="profile-stat">
+                <div class="stat-number" id="profileBalance">0 XLUSD</div>
+                <div class="stat-label">Balance</div>
+              </div>
+              <div class="profile-stat">
+                <div class="stat-number" id="profileJoined">-</div>
+                <div class="stat-label">Member Since</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="profile-details">
+          <div class="detail-card">
+            <h3>Account Information</h3>
+            <div class="detail-item">
+              <span class="detail-label">Email</span>
+              <span class="detail-value" id="detailEmail">-</span>
+            </div>
+            <div class="detail-item address-item">
+              <span class="detail-label">XRPL Wallet</span>
+              <span class="detail-value" id="detailAddress">-</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Wallet Status</span>
+              <span class="detail-value" id="walletStatus" style="font-weight: 600;">Not Connected</span>
+            </div>
+            <!-- XRP balance removed from UI (XLUSD-only experience) -->
+            
+            <!-- Verify Button (shown when wallet connected but not verified) -->
+            <div class="detail-item" id="walletVerifySection" style="display: none; padding-top: 16px; border-top: 1px solid rgba(0,0,0,0.05);">
+              <button id="btnVerifyWallet" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px;">
+                ✅ Verify Wallet
+              </button>
+              <p style="font-size: 11px; color: #718096; margin: 8px 0 0; text-align: center;">
+                Verify ownership to use your wallet for escrow operations
+              </p>
+            </div>
+            
+            <!-- Connect Section (shown when no wallet connected) -->
+            <div class="detail-item" id="walletConnectSection" style="padding-top: 20px; border-top: 1px solid rgba(0,0,0,0.05);">
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <input 
+                  type="text" 
+                  id="walletSeedInput" 
+                  placeholder="Enter your XRPL wallet seed (starts with 's'...)" 
+                  style="padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 13px;"
+                  autocomplete="off"
+                />
+                <p style="font-size: 11px; color: #718096; margin: 4px 0 0; line-height: 1.4;">
+                  💡 Get a testnet wallet seed from: <a href="https://xrpl.org/xrp-testnet-faucet.html" target="_blank" style="color: #667eea;">XRPL Testnet Faucet</a><br/>
+                  Make sure to copy the <strong>Secret</strong> (seed starting with 's'), not the Address (starting with 'r')
+                </p>
+                <button id="btnConnectWallet" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                  🔒 Connect Wallet
+                </button>
+                <p style="font-size: 12px; color: #718096; margin: 0;">
+                  ⚠️ Your seed is encrypted and stored securely. Never share it with anyone.
+                </p>
+              </div>
+            </div>
+
+            <!-- Send XRPL Payment section removed per request -->
+          </div>
+
+          <div class="detail-card">
+            <h3>Security</h3>
+            <div class="detail-item">
+              <span class="detail-label">Two-Factor Authentication</span>
+              <span class="detail-value">
+                <label class="toggle-switch small">
+                  <input type="checkbox" id="twoFactor">
+                  <span class="toggle-slider"></span>
+                </label>
+              </span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Last Login</span>
+              <span class="detail-value" id="lastLogin">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="profile.js"></script>
+  </body>
+</html>

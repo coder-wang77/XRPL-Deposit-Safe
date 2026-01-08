@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | Settings</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>Deposit / Withdraw</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item active" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Settings</h2>
+          <p class="muted">Manage your account preferences</p>
+        </div>
+      </div>
+
+      <div class="settings-container">
+        <!-- Account Settings -->
+        <div class="settings-section">
+          <h3 class="section-title">Account Settings</h3>
+          <div class="settings-card">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Email Address</label>
+                <p class="setting-desc">Your account email address</p>
+              </div>
+              <div class="setting-value" id="settingsEmail">Loading...</div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Change Password</label>
+                <p class="setting-desc">Update your account password</p>
+              </div>
+              <button class="btn-secondary" id="btnChangePassword">Change Password</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Notification Settings -->
+        <div class="settings-section">
+          <h3 class="section-title">Notifications</h3>
+          <div class="settings-card">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Email Notifications</label>
+                <p class="setting-desc">Receive email updates about your escrows</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="emailNotifications" checked>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Transaction Alerts</label>
+                <p class="setting-desc">Get notified when transactions complete</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="transactionAlerts" checked>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- XRPL Settings -->
+        <div class="settings-section">
+          <h3 class="section-title">XRPL Configuration</h3>
+          <div class="settings-card">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Network</label>
+                <p class="setting-desc">XRPL network to use</p>
+              </div>
+              <select class="setting-select" id="networkSelect">
+                <option value="testnet">Testnet</option>
+                <option value="mainnet">Mainnet</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Default Account</label>
+                <p class="setting-desc">Your XRPL account address</p>
+              </div>
+              <div style="display:flex; flex-direction: column; gap: 8px; max-width: 520px; width: 100%;">
+                <div style="display:flex; gap: 10px; align-items: center;">
+                  <input
+                    class="setting-input"
+                    id="xrplAddressInput"
+                    type="text"
+                    placeholder="Type your XRPL address (r...)"
+                    autocomplete="off"
+                    style="flex: 1; font-family: monospace; font-size: 13px;"
+                  />
+                  <button class="btn-secondary" id="btnVerifyXrplAddress" style="white-space: nowrap;">
+                    Verify
+                  </button>
+                </div>
+                <div class="muted" id="xrplAddressStatus" style="font-size: 12px;">
+                  Not verified
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="settings-section">
+          <h3 class="section-title danger">Danger Zone</h3>
+          <div class="settings-card danger-card">
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label">Delete Account</label>
+                <p class="setting-desc">Permanently delete your account and all data</p>
+              </div>
+              <button class="btn-danger" id="btnDeleteAccount">Delete Account</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

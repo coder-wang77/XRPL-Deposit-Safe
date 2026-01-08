@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | XLUSD Deposit / Withdraw</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>XLUSD Deposit / Withdraw</h2>
+          <p class="muted">Withdraw is now inside the XLUSD Deposit / Withdraw page.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="muted">Redirecting…</p>
+      </div>
+
+      <div class="withdraw-container">
+        <div class="withdraw-card">
+          <h3>Withdrawal Amount</h3>
+          <div class="amount-input-group">
+            <label for="withdrawAmount">Amount (XLUSD)</label>
+            <input 
+              type="number" 
+              id="withdrawAmount" 
+              placeholder="100" 
+              min="1" 
+              step="0.01"
+              required 
+            />
+            <div class="price-info">
+              <span>Rate: $1.00 USD per XLUSD</span>
+            </div>
+          </div>
+
+          <div class="total-section">
+            <div class="total-row">
+              <span>You will receive:</span>
+              <span id="withdrawTotal">$0.00 USD</span>
+            </div>
+          </div>
+
+          <div class="withdrawal-methods">
+            <h3>Withdrawal Method</h3>
+            <div class="payment-tabs">
+              <button class="tab-btn active" data-method="bank">
+                🏦 Bank Transfer
+              </button>
+              <button class="tab-btn" data-method="paynow">
+                📱 PayNow
+              </button>
+            </div>
+
+            <!-- Bank Transfer Form -->
+            <div class="payment-form active" id="bank-form">
+              <label for="bankName">Bank Name</label>
+              <input 
+                type="text" 
+                id="bankName" 
+                placeholder="DBS, OCBC, UOB, etc."
+                required
+              />
+
+              <label for="accountNumber">Account Number</label>
+              <input 
+                type="text" 
+                id="accountNumber" 
+                placeholder="1234567890"
+                required
+              />
+
+              <label for="accountName">Account Holder Name</label>
+              <input 
+                type="text" 
+                id="accountName" 
+                placeholder="John Doe"
+                required
+              />
+
+              <label for="swiftCode">SWIFT/BIC Code (Optional)</label>
+              <input 
+                type="text" 
+                id="swiftCode" 
+                placeholder="DBSSSGSG"
+              />
+            </div>
+
+            <!-- PayNow Form -->
+            <div class="payment-form" id="paynow-form">
+              <label for="paynowMobile">Mobile Number</label>
+              <input 
+                type="tel" 
+                id="paynowMobile" 
+                placeholder="+65 9123 4567"
+                required
+              />
+
+              <label for="paynowName">Name (as registered with PayNow)</label>
+              <input 
+                type="text" 
+                id="paynowName" 
+                placeholder="John Doe"
+                required
+              />
+
+              <div class="paynow-info">
+                <p class="hint">Funds will be sent to your PayNow account within 1-3 business days.</p>
+              </div>
+            </div>
+          </div>
+
+          <button id="btnProcessWithdrawal" class="btn-pay" disabled>
+            Process Withdrawal
+          </button>
+
+          <div class="result" id="withdrawalResult"></div>
+        </div>
+
+        <!-- Withdrawal History -->
+        <div class="withdraw-history-card">
+          <h3>Recent Withdrawals</h3>
+          <div class="withdraw-history-list" id="withdrawHistory">
+            <div class="loading-state">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Keep old link working
+      window.location.replace("buy-xlusd.html" + (window.location.search || ""));
+    </script>
+  </body>
+</html>

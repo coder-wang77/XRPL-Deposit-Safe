@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DepositSafe | Deposit / Withdraw</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">DepositSafe</h1>
+        <p class="logo-subtitle">Secure Escrow Platform</p>
+      </div>
+      
+      <div class="sidebar-menu">
+        <a href="dashboard.html" class="menu-item" data-page="dashboard">
+          <span class="menu-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>Deposit / Withdraw</span>
+        </a>
+        <a href="history.html" class="menu-item" data-page="history">
+          <span class="menu-icon">📜</span>
+          <span>History</span>
+        </a>
+        <a href="settings.html" class="menu-item" data-page="settings">
+          <span class="menu-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="user-avatar">
+            <span id="userInitial">U</span>
+          </div>
+          <div class="user-details">
+            <div class="user-name" id="sidebarUser">Loading...</div>
+            <div class="user-email" id="sidebarEmail">...</div>
+          </div>
+        </div>
+        <a href="index.html" class="menu-item logout">
+          <span class="menu-icon">🚪</span>
+          <span>Log out</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="topbar">
+        <div>
+          <h2>Deposit / Withdraw</h2>
+          <p class="muted">Deposit USD to mint XLUSD, or withdraw USD by burning XLUSD (fake bank)</p>
+        </div>
+      </div>
+
+      <div class="payment-container">
+      <div class="payment-card">
+        <div class="payment-tabs" style="margin-bottom: 28px;">
+          <button class="tab-btn active" data-flow="deposit">💰 Deposit</button>
+          <button class="tab-btn" data-flow="withdraw">💸 Withdraw (Sell XLUSD)</button>
+        </div>
+
+        <!-- DEPOSIT -->
+        <div class="payment-form active" id="deposit-flow">
+        <h3>Deposit Amount</h3>
+        <div class="amount-input-group">
+          <label for="amount">Amount (XLUSD)</label>
+          <input 
+            type="number" 
+            id="amount" 
+            placeholder="100" 
+            min="1" 
+            step="0.01"
+            required 
+          />
+          <div class="price-info" id="priceInfo">
+            <span>Price: $1.00 USD per XLUSD</span>
+          </div>
+        </div>
+
+        <div class="total-section">
+          <div class="total-row">
+            <span>Total Amount:</span>
+            <span id="totalAmount">$0.00 USD</span>
+          </div>
+        </div>
+
+        <div class="payment-methods">
+          <h3>Payment Method</h3>
+          <div class="payment-tabs">
+            <button class="tab-btn active" data-method="creditcard">
+              💳 Credit Card
+            </button>
+            <button class="tab-btn" data-method="paynow">
+              📱 PayNow
+            </button>
+            <button class="tab-btn" data-method="bank">
+              🏦 Bank Transfer
+            </button>
+          </div>
+
+          <!-- Credit Card Form -->
+          <div class="payment-form active" id="creditcard-form">
+            <div style="background: #f0f0f0; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; color: #666;">
+              💡 <strong>Test Mode:</strong> Leave card details empty to use fake payment (no real money charged). 
+              XLUSD will be simulated (recorded in database without XRPL transaction) if PAYER_SEED is not configured.
+            </div>
+            <label for="cardNumber">Card Number (optional in test mode)</label>
+            <input 
+              type="text" 
+              id="cardNumber" 
+              placeholder="1234 5678 9012 3456"
+              maxlength="19"
+            />
+
+            <div class="form-row">
+              <div>
+                <label for="expiry">Expiry Date</label>
+                <input 
+                  type="text" 
+                  id="expiry" 
+                  placeholder="MM/YY"
+                  maxlength="5"
+                />
+              </div>
+              <div>
+                <label for="cvv">CVV</label>
+                <input 
+                  type="text" 
+                  id="cvv" 
+                  placeholder="123"
+                  maxlength="4"
+                />
+              </div>
+            </div>
+
+            <label for="cardName">Cardholder Name</label>
+            <input 
+              type="text" 
+              id="cardName" 
+              placeholder="John Doe"
+            />
+
+            <label for="billingEmail">Billing Email</label>
+            <input 
+              type="email" 
+              id="billingEmail" 
+              placeholder="your@email.com"
+            />
+          </div>
+
+          <!-- PayNow Form -->
+          <div class="payment-form" id="paynow-form">
+            <div class="paynow-info">
+              <p>Scan the QR code or use the PayNow details below to complete your payment.</p>
+              <div class="paynow-qr" id="paynowQR">
+                <p class="muted">QR code will appear after entering amount</p>
+              </div>
+              <div class="paynow-details" id="paynowDetails">
+                <p><strong>PayNow UEN:</strong> <span id="paynowUEN">TXXLLC1234</span></p>
+                <p><strong>Reference:</strong> <span id="paynowRef">Loading...</span></p>
+                <p><strong>Amount:</strong> <span id="paynowAmount">$0.00</span></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bank Transfer Form (Fake bank account) -->
+          <div class="payment-form" id="bankdeposit-form">
+            <div class="paynow-info">
+              <p>
+                Use the virtual bank account details below to deposit USD and mint XLUSD (simulated).
+              </p>
+              <div class="paynow-details" id="bankAccountDetails">
+                <p class="muted">Loading bank account…</p>
+              </div>
+
+              <label for="bankTransferRef">Transfer Reference (optional)</label>
+              <input
+                type="text"
+                id="bankTransferRef"
+                placeholder="e.g. DEPOSITSAFE-123"
+              />
+
+              <p class="hint" style="margin-top: 10px;">
+                This is a fake bank integration: clicking “Process Payment” simulates an incoming transfer instantly.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <button id="btnProcessPayment" class="btn-pay" disabled>
+          Process Payment
+        </button>
+
+        <div class="result" id="paymentResult"></div>
+        </div>
+
+        <!-- WITHDRAW -->
+        <div class="payment-form" id="withdraw-flow">
+          <h3>Withdraw Amount</h3>
+          <div class="amount-input-group">
+            <label for="withdrawAmount">Amount (XLUSD)</label>
+            <input 
+              type="number" 
+              id="withdrawAmount" 
+              placeholder="100" 
+              min="1" 
+              step="0.01"
+              required 
+            />
+            <div class="price-info">
+              <span>Rate: $1.00 USD per XLUSD</span>
+            </div>
+          </div>
+
+          <div class="total-section">
+            <div class="total-row">
+              <span>You will receive:</span>
+              <span id="withdrawTotal">$0.00 USD</span>
+            </div>
+          </div>
+
+          <div class="withdrawal-methods">
+            <h3>Withdrawal Method</h3>
+            <div class="payment-tabs">
+              <button class="tab-btn active" data-method="bank">🏦 Bank Transfer</button>
+              <button class="tab-btn" data-method="paynow">📱 PayNow</button>
+            </div>
+
+            <div class="payment-form active" id="bank-form">
+              <label for="bankName">Bank Name</label>
+              <input type="text" id="bankName" placeholder="DBS, OCBC, UOB, etc." />
+
+              <label for="accountNumber">Account Number</label>
+              <input type="text" id="accountNumber" placeholder="1234567890" />
+
+              <label for="accountName">Account Holder Name</label>
+              <input type="text" id="accountName" placeholder="John Doe" />
+
+              <label for="swiftCode">SWIFT/BIC Code (Optional)</label>
+              <input type="text" id="swiftCode" placeholder="DBSSSGSG" />
+            </div>
+
+            <div class="payment-form" id="paynow-withdraw-form">
+              <label for="paynowMobile">Mobile Number</label>
+              <input type="tel" id="paynowMobile" placeholder="+65 9123 4567" />
+
+              <label for="paynowName">Name (as registered with PayNow)</label>
+              <input type="text" id="paynowName" placeholder="John Doe" />
+
+              <div class="paynow-info">
+                <p class="hint">Funds will be recorded instantly (fake bank).</p>
+              </div>
+            </div>
+          </div>
+
+          <button id="btnProcessWithdrawal" class="btn-pay" disabled>
+            Process Withdrawal
+          </button>
+
+          <div class="result" id="withdrawalResult"></div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <script src="buy-xlusd.js"></script>
+  </body>
+</html>
