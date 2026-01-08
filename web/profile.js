@@ -151,8 +151,6 @@ async function loadProfile() {
 const btnConnectWallet = document.getElementById("btnConnectWallet");
 const btnVerifyWallet = document.getElementById("btnVerifyWallet");
 const walletSeedInput = document.getElementById("walletSeedInput");
-const btnSendTransfer = document.getElementById("btnSendTransfer");
-const transferResult = document.getElementById("transferResult");
 
 function showTransferResult(ok, text) {
   if (!transferResult) return;
@@ -276,87 +274,7 @@ btnSendTransfer?.addEventListener("click", async () => {
     return;
   }
 
-  btnSendTransfer.disabled = true;
-  btnSendTransfer.textContent = "Sending...";
-
-  try {
-    const isEmail = !!to && to.includes("@");
-    const isSimulatedXlusd = currency === "XLUSD" && isEmail;
-    const endpoint = isSimulatedXlusd ? "/api/xlusd/transfer" : "/api/xrpl/transfer";
-
-    const payload = isSimulatedXlusd
-      ? { toEmail: to, amountXlusd: amount, memo: memo || null }
-      : { to, amount, currency, memo: memo || null };
-
-    const res = await fetch(`${API}${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(payload),
-    });
-
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      const hint = data.hint ? `\n\nHint: ${data.hint}` : "";
-      showTransferResult(false, `❌ Transfer failed: ${data.error || "Unknown error"}${hint}`);
-      return;
-    }
-
-    const txHash = data.txHash || "N/A";
-    const txUrl =
-      !data.simulated && txHash && txHash !== "N/A"
-        ? `https://testnet.xrpl.org/transactions/${txHash}`
-        : null;
-
-    showTransferResult(
-      true,
-      data.simulated
-        ? `✅ Simulated XLUSD transfer sent to ${data.toEmail}\n` +
-          `Amount: ${data.amountXlusd} XLUSD\n` +
-          `Reference: ${txHash}`
-        : `✅ Sent ${data.amount} ${data.currency} to ${data.toAddress}\n` +
-          `Tx: ${txHash}${txUrl ? `\n${txUrl}` : ""}`
-    );
-
-    // Clear inputs
-    const toEl = document.getElementById("transferTo");
-    const amtEl = document.getElementById("transferAmount");
-    const memoEl = document.getElementById("transferMemo");
-    if (toEl) toEl.value = "";
-    if (amtEl) amtEl.value = "";
-    if (memoEl) memoEl.value = "";
-  } catch (err) {
-    showTransferResult(false, `❌ Cannot reach backend: ${err.message || "Unknown error"}`);
-  } finally {
-    btnSendTransfer.disabled = false;
-    btnSendTransfer.textContent = "📤 Send";
-  }
-});
-
-// Load wallet status periodically
-async function loadWalletStatus() {
-  try {
-    const res = await fetch(`${API}/api/wallet/status`, {
-      credentials: "include",
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      
-      if (data.wallet && data.connected) {
-        // Update wallet status display
-        const statusEl = document.getElementById("walletStatus");
-        
-        if (statusEl) {
-          if (data.verified) {
-            statusEl.textContent = "✅ Verified";
-            statusEl.style.color = "#10b981";
-          } else if (data.wallet.existsOnLedger === false) {
-            statusEl.textContent = "⚠️ Not Activated (Fund with XRP)";
-            statusEl.style.color = "#f59e0b";
-          } else {
-            statusEl.textContent = "⚠️ Not Verified";
-            statusEl.style.color = "#f59e0b";
+  // Transfer UI and handlers removed: transfers between users are disabled in profile.
           }
         }
 
