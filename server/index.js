@@ -19,6 +19,7 @@ import {
   createFreelancerEscrow,
   createQAEscrow,
   dropsToXrp,
+  xrpToDrops,
 } from "./xrpl.js";
 import AIChecker from "./ai-checker.js";
 import {
@@ -146,7 +147,7 @@ async function convertEscrowXrpToXlusd({ client, wallet, issuer, escrowAmountDro
 
   // Safety: don't accidentally spend below base reserve
   const reserveBufferXrp = 15; // conservative buffer on testnet
-  const reserveBufferDrops = BigInt(xrpl.xrpToDrops(String(reserveBufferXrp)));
+  const reserveBufferDrops = BigInt(xrpToDrops(String(reserveBufferXrp)));
 
   const info = await client.request({
     command: "account_info",
@@ -2467,7 +2468,8 @@ app.post("/api/xlusd/buy", requireAuth, async (req, res) => {
         issuer: xlusdIssuer,
         value: String(amountXlusd),
       },
-      TakerPays: xrpl.xrpToDrops(String(totalXrpNeeded)),
+      // Round total XRP needed to 5 decimals before converting to drops
+      TakerPays: xrpToDrops(Number(totalXrpNeeded).toFixed(5)),
     };
 
     const prepared = await client.autofill(tx);

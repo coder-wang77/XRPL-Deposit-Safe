@@ -290,7 +290,8 @@ export async function createEscrow({
     TransactionType: "EscrowCreate",
     Account: payerWallet.classicAddress,
     Destination: payeeAddress,
-    Amount: xrpToDrops(amount), // Must be string in drops
+    // Round amount to 5 decimal places for UX consistency before converting to drops
+    Amount: xrpToDrops(Number(amount).toFixed(5)), // Must be string in drops
     FinishAfter: Number(finishRippleTime), // Must be number (ripple epoch seconds)
   };
 
