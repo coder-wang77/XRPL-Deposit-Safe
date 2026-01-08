@@ -127,7 +127,24 @@
                 <label class="setting-label">Default Account</label>
                 <p class="setting-desc">Your XRPL account address</p>
               </div>
-              <div class="setting-value" id="xrplAddress">Loading...</div>
+              <div style="display:flex; flex-direction: column; gap: 8px; max-width: 520px; width: 100%;">
+                <div style="display:flex; gap: 10px; align-items: center;">
+                  <input
+                    class="setting-input"
+                    id="xrplAddressInput"
+                    type="text"
+                    placeholder="Type your XRPL address (r...)"
+                    autocomplete="off"
+                    style="flex: 1; font-family: monospace; font-size: 13px;"
+                  />
+                  <button class="btn-secondary" id="btnVerifyXrplAddress" style="white-space: nowrap;">
+                    Verify
+                  </button>
+                </div>
+                <div class="muted" id="xrplAddressStatus" style="font-size: 12px;">
+                  Not verified
+                </div>
+              </div>
             </div>
           </div>
         </div>

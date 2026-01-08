@@ -15,6 +15,7 @@ export const XLUSD_PRICE_USD = 1.0;
 export const PAYMENT_METHODS = {
   CREDIT_CARD: "creditcard",
   PAYNOW: "paynow",
+  BANK: "bank",
 };
 
 export const WITHDRAWAL_METHODS = {

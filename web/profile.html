@@ -133,6 +133,53 @@
                 </p>
               </div>
             </div>
+
+            <!-- Send XRPL Payment (requires verified wallet) -->
+            <div class="detail-item" id="walletTransferSection" style="padding-top: 20px; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 16px;">
+              <h4 style="margin: 0 0 10px; font-size: 14px; color: #1a202c;">Send XRP / XLUSD to another user</h4>
+              <div style="display:flex; flex-direction: column; gap: 10px;">
+                <input
+                  type="text"
+                  id="transferTo"
+                  placeholder="Recipient email (user@site) or XRPL address (r...)"
+                  style="padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 13px;"
+                  autocomplete="off"
+                />
+
+                <div style="display:flex; gap: 10px;">
+                  <select id="transferCurrency" style="flex: 0 0 140px; padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px;">
+                    <option value="XRP">XRP</option>
+                    <option value="XLUSD">XLUSD</option>
+                  </select>
+                  <input
+                    type="number"
+                    id="transferAmount"
+                    placeholder="Amount"
+                    min="0"
+                    step="0.000001"
+                    style="flex: 1; padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 13px;"
+                  />
+                </div>
+
+                <input
+                  type="text"
+                  id="transferMemo"
+                  placeholder="Memo (optional)"
+                  style="padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 13px;"
+                />
+
+                <button id="btnSendTransfer" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer;">
+                  📤 Send
+                </button>
+
+                <div class="result" id="transferResult"></div>
+
+                <p style="font-size: 11px; color: #718096; margin: 0; line-height: 1.4;">
+                  💡 Tip: If you enter an email, the recipient must have a verified wallet connected in their Profile.
+                  XLUSD transfers also require the recipient to have an XLUSD trustline.
+                </p>
+              </div>
+            </div>
           </div>
 
           <div class="detail-card">

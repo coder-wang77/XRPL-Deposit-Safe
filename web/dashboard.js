@@ -204,7 +204,9 @@ function getActivityIcon(type) {
     finish: "✅", 
     cancel: "❌", 
     purchase: "💰",
-    withdrawal: "💸"
+    withdrawal: "💸",
+    transfer_in: "⬇️",
+    transfer_out: "⬆️",
   };
   return icons[type] || "📝";
 }
@@ -215,6 +217,10 @@ function getActivityTitle(tx) {
       return `XLUSD Purchased: ${tx.amount} XLUSD`;
     } else if (tx.type === 'withdrawal') {
       return `XLUSD Withdrawn: ${tx.amount} XLUSD`;
+    } else if (tx.type === 'transfer_in') {
+      return `Transfer Received: ${tx.amount} ${tx.currency || ""}`.trim();
+    } else if (tx.type === 'transfer_out') {
+      return `Transfer Sent: ${tx.amount} ${tx.currency || ""}`.trim();
     }
   }
   
@@ -225,7 +231,9 @@ function getActivityTitle(tx) {
     finish: "Escrow Finished", 
     cancel: "Escrow Cancelled", 
     purchase: "XLUSD Purchased",
-    withdrawal: "XLUSD Withdrawn"
+    withdrawal: "XLUSD Withdrawn",
+    transfer_in: "Transfer Received",
+    transfer_out: "Transfer Sent",
   };
   return titles[type] || "Transaction";
 }

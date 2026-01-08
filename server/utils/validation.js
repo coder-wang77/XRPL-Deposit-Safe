@@ -65,7 +65,7 @@ export function isValidEmail(email) {
  * Validate payment method
  */
 export function isValidPaymentMethod(method) {
-  return method === "creditcard" || method === "paynow";
+  return method === "creditcard" || method === "paynow" || method === "bank";
 }
 
 /**

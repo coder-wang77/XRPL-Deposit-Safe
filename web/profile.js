@@ -151,6 +151,16 @@ async function loadProfile() {
 const btnConnectWallet = document.getElementById("btnConnectWallet");
 const btnVerifyWallet = document.getElementById("btnVerifyWallet");
 const walletSeedInput = document.getElementById("walletSeedInput");
+const btnSendTransfer = document.getElementById("btnSendTransfer");
+const transferResult = document.getElementById("transferResult");
+
+function showTransferResult(ok, text) {
+  if (!transferResult) return;
+  transferResult.textContent = text || "";
+  transferResult.className = "result";
+  if (ok === true) transferResult.classList.add("ok");
+  if (ok === false) transferResult.classList.add("bad");
+}
 
 btnConnectWallet?.addEventListener("click", async () => {
   const seed = walletSeedInput?.value.trim();
@@ -246,6 +256,80 @@ btnVerifyWallet?.addEventListener("click", async () => {
   } finally {
     btnVerifyWallet.disabled = false;
     btnVerifyWallet.textContent = "Verify Wallet";
+  }
+});
+
+btnSendTransfer?.addEventListener("click", async () => {
+  const to = document.getElementById("transferTo")?.value?.trim();
+  const currency = document.getElementById("transferCurrency")?.value || "XRP";
+  const amount = Number(document.getElementById("transferAmount")?.value);
+  const memo = document.getElementById("transferMemo")?.value?.trim();
+
+  showTransferResult(null, "");
+
+  if (!to) {
+    showTransferResult(false, "Please enter a recipient email or XRPL address.");
+    return;
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showTransferResult(false, "Please enter a valid amount.");
+    return;
+  }
+
+  btnSendTransfer.disabled = true;
+  btnSendTransfer.textContent = "Sending...";
+
+  try {
+    const isEmail = !!to && to.includes("@");
+    const isSimulatedXlusd = currency === "XLUSD" && isEmail;
+    const endpoint = isSimulatedXlusd ? "/api/xlusd/transfer" : "/api/xrpl/transfer";
+
+    const payload = isSimulatedXlusd
+      ? { toEmail: to, amountXlusd: amount, memo: memo || null }
+      : { to, amount, currency, memo: memo || null };
+
+    const res = await fetch(`${API}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      const hint = data.hint ? `\n\nHint: ${data.hint}` : "";
+      showTransferResult(false, `❌ Transfer failed: ${data.error || "Unknown error"}${hint}`);
+      return;
+    }
+
+    const txHash = data.txHash || "N/A";
+    const txUrl =
+      !data.simulated && txHash && txHash !== "N/A"
+        ? `https://testnet.xrpl.org/transactions/${txHash}`
+        : null;
+
+    showTransferResult(
+      true,
+      data.simulated
+        ? `✅ Simulated XLUSD transfer sent to ${data.toEmail}\n` +
+          `Amount: ${data.amountXlusd} XLUSD\n` +
+          `Reference: ${txHash}`
+        : `✅ Sent ${data.amount} ${data.currency} to ${data.toAddress}\n` +
+          `Tx: ${txHash}${txUrl ? `\n${txUrl}` : ""}`
+    );
+
+    // Clear inputs
+    const toEl = document.getElementById("transferTo");
+    const amtEl = document.getElementById("transferAmount");
+    const memoEl = document.getElementById("transferMemo");
+    if (toEl) toEl.value = "";
+    if (amtEl) amtEl.value = "";
+    if (memoEl) memoEl.value = "";
+  } catch (err) {
+    showTransferResult(false, `❌ Cannot reach backend: ${err.message || "Unknown error"}`);
+  } finally {
+    btnSendTransfer.disabled = false;
+    btnSendTransfer.textContent = "📤 Send";
   }
 });
 

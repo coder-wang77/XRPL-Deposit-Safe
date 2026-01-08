@@ -46,41 +46,72 @@ flowButtons.forEach((btn) => {
 const amountInput = document.getElementById("amount");
 const totalAmountEl = document.getElementById("totalAmount");
 const priceInfoEl = document.getElementById("priceInfo");
-const tabButtons = document.querySelectorAll(".tab-btn");
-const paymentForms = document.querySelectorAll(".payment-form");
+const depositMethodButtons = document.querySelectorAll("#deposit-flow .tab-btn[data-method]");
+const depositMethodForms = [
+  document.getElementById("creditcard-form"),
+  document.getElementById("paynow-form"),
+  document.getElementById("bankdeposit-form"),
+].filter(Boolean);
 const processBtn = document.getElementById("btnProcessPayment");
 const paymentResult = document.getElementById("paymentResult");
+const bankAccountDetailsEl = document.getElementById("bankAccountDetails");
 
 let currentPaymentMethod = "creditcard";
 const pricePerXLUSD = 1.00; // $1 USD per XLUSD
 
 // Tab switching (payment methods only inside deposit flow)
-tabButtons.forEach((btn) => {
-  if (btn.dataset.flow) return;
-  if (btn.dataset.method === undefined) return;
+depositMethodButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     const method = btn.dataset.method;
     currentPaymentMethod = method;
 
     // Update active tab
-    tabButtons.forEach((b) => {
-      if (b.dataset.method) b.classList.remove("active");
-    });
+    depositMethodButtons.forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
 
     // Update active form
-    paymentForms.forEach((f) => {
-      if (f.id === "deposit-flow" || f.id === "withdraw-flow") return;
-      f.classList.remove("active");
-    });
-    document.getElementById(`${method}-form`)?.classList.add("active");
+    depositMethodForms.forEach((f) => f.classList.remove("active"));
+    if (method === "creditcard") document.getElementById("creditcard-form")?.classList.add("active");
+    if (method === "paynow") document.getElementById("paynow-form")?.classList.add("active");
+    if (method === "bank") document.getElementById("bankdeposit-form")?.classList.add("active");
 
     // Update PayNow details if needed
     if (method === "paynow") {
       updatePayNowDetails();
     }
+
+    if (method === "bank") {
+      loadBankAccountDetails();
+    }
   });
 });
+
+async function loadBankAccountDetails() {
+  if (!bankAccountDetailsEl) return;
+  try {
+    const res = await fetch(`${API}/api/bank/account`, { credentials: "include" });
+    if (!res.ok) {
+      bankAccountDetailsEl.innerHTML = `<p class="muted">Failed to load bank account.</p>`;
+      return;
+    }
+    const data = await res.json();
+    if (!data.ok || !data.bank) {
+      bankAccountDetailsEl.innerHTML = `<p class="muted">Bank account unavailable.</p>`;
+      return;
+    }
+    const b = data.bank;
+    bankAccountDetailsEl.innerHTML = `
+      <p><strong>Bank:</strong> ${b.bankName}</p>
+      <p><strong>Routing:</strong> ${b.routingNumber}</p>
+      <p><strong>Account:</strong> ${b.accountNumber}</p>
+      <p><strong>Beneficiary:</strong> ${b.beneficiaryName}</p>
+      <p><strong>Suggested Reference:</strong> ${b.referenceHint}</p>
+      <p><strong>Ledger balance:</strong> $${Number(b.balanceUsd || 0).toFixed(2)} USD</p>
+    `;
+  } catch (e) {
+    bankAccountDetailsEl.innerHTML = `<p class="muted">Failed to load bank account.</p>`;
+  }
+}
 
 // Calculate total when amount changes
 amountInput.addEventListener("input", () => {
@@ -191,6 +222,9 @@ processBtn.addEventListener("click", async () => {
     } else if (currentPaymentMethod === "paynow") {
       const ref = document.getElementById("paynowRef").textContent;
       paymentData.paynowRef = ref;
+    } else if (currentPaymentMethod === "bank") {
+      const ref = document.getElementById("bankTransferRef")?.value?.trim();
+      if (ref) paymentData.bankTransferRef = ref;
     }
 
     console.log("Sending purchase request:", { 
@@ -307,7 +341,7 @@ checkAuth();
 // ======================
 
 let currentWithdrawalMethod = "bank";
-const withdrawTabButtons = document.querySelectorAll(".tab-btn[data-method]");
+const withdrawTabButtons = document.querySelectorAll("#withdraw-flow .tab-btn[data-method]");
 const withdrawAmountInput = document.getElementById("withdrawAmount");
 const withdrawTotalEl = document.getElementById("withdrawTotal");
 const withdrawBtn = document.getElementById("btnProcessWithdrawal");
@@ -321,7 +355,7 @@ withdrawTabButtons.forEach((btn) => {
     btn.classList.add("active");
 
     document.getElementById("bank-form")?.classList.toggle("active", method === "bank");
-    document.getElementById("paynow-form")?.classList.toggle("active", method === "paynow");
+    document.getElementById("paynow-withdraw-form")?.classList.toggle("active", method === "paynow");
   });
 });
 

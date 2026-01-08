@@ -100,6 +100,9 @@
             <button class="tab-btn" data-method="paynow">
               📱 PayNow
             </button>
+            <button class="tab-btn" data-method="bank">
+              🏦 Bank Transfer
+            </button>
           </div>
 
           <!-- Credit Card Form -->
@@ -166,6 +169,29 @@
               </div>
             </div>
           </div>
+
+          <!-- Bank Transfer Form (Fake bank account) -->
+          <div class="payment-form" id="bankdeposit-form">
+            <div class="paynow-info">
+              <p>
+                Use the virtual bank account details below to deposit USD and mint XLUSD (simulated).
+              </p>
+              <div class="paynow-details" id="bankAccountDetails">
+                <p class="muted">Loading bank account…</p>
+              </div>
+
+              <label for="bankTransferRef">Transfer Reference (optional)</label>
+              <input
+                type="text"
+                id="bankTransferRef"
+                placeholder="e.g. DEPOSITSAFE-123"
+              />
+
+              <p class="hint" style="margin-top: 10px;">
+                This is a fake bank integration: clicking “Process Payment” simulates an incoming transfer instantly.
+              </p>
+            </div>
+          </div>
         </div>
 
         <button id="btnProcessPayment" class="btn-pay" disabled>
@@ -221,7 +247,7 @@
               <input type="text" id="swiftCode" placeholder="DBSSSGSG" />
             </div>
 
-            <div class="payment-form" id="paynow-form">
+            <div class="payment-form" id="paynow-withdraw-form">
               <label for="paynowMobile">Mobile Number</label>
               <input type="tel" id="paynowMobile" placeholder="+65 9123 4567" />
 

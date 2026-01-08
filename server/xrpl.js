@@ -113,15 +113,15 @@ export function generateConditionPair() {
 
 // Convert XRP -> drops (XRPL uses drops in tx fields)
 export function xrpToDrops(xrp) {
-  return xrpl.xrpToDrops(String(xrp));
-}
-
-// Convert drops -> XRP and format to a fixed number of decimal places (default: 5)
-export function dropsToXrp(drops, decimals = 5) {
-  const xrp = xrpl.dropsToXrp(String(drops));
-  const num = Number(xrp);
-  if (!Number.isFinite(num)) return xrp;
-  return num.toFixed(decimals);
+  // xrpl.js requires XRP amounts to have at most 6 decimal places.
+  // QA flows can generate repeating decimals (e.g. XLUSD / rate), so normalize here.
+  const n = Number(xrp);
+  if (!Number.isFinite(n)) {
+    throw new Error(`xrpToDrops: invalid XRP amount '${xrp}'`);
+  }
+  // Round to 6 decimals (1 drop = 0.000001 XRP) and trim trailing zeros.
+  const normalized = n.toFixed(6).replace(/\.?0+$/, "");
+  return xrpl.xrpToDrops(normalized);
 }
 
 // Read escrow from ledger (so we can check it exists + times)
@@ -290,8 +290,7 @@ export async function createEscrow({
     TransactionType: "EscrowCreate",
     Account: payerWallet.classicAddress,
     Destination: payeeAddress,
-    // Round amount to 5 decimal places for UX consistency before converting to drops
-    Amount: xrpToDrops(Number(amount).toFixed(5)), // Must be string in drops
+    Amount: xrpToDrops(amount), // Must be string in drops
     FinishAfter: Number(finishRippleTime), // Must be number (ripple epoch seconds)
   };
 

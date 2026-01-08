@@ -95,7 +95,7 @@ async function loadHistory() {
             <span class="history-status ${transaction.status}">${transaction.status}</span>
           </div>
           <div class="history-details">
-            <span class="history-amount">${transaction.amount || "N/A"}</span>
+            <span class="history-amount">${formatAmount(transaction)}</span>
             <span class="history-date">${formatDate(transaction.timestamp)}</span>
           </div>
           ${transaction.txHash ? `<div class="history-tx">Tx: ${transaction.txHash.substring(0, 20)}...</div>` : ""}
@@ -107,12 +107,24 @@ async function loadHistory() {
   }
 }
 
+function formatAmount(t) {
+  if (!t) return "N/A";
+  const amt = Number(t.amount);
+  if (!Number.isFinite(amt)) return String(t.amount || "N/A");
+  if (t.currency) return `${amt} ${t.currency}`;
+  if (t.type === "purchase" || t.type === "withdrawal") return `${amt} XLUSD`;
+  return String(t.amount);
+}
+
 function getTransactionIcon(type) {
   const icons = {
     create: "📦",
     finish: "✅",
     cancel: "❌",
-    purchase: "💰"
+    purchase: "💰",
+    withdrawal: "💸",
+    transfer_in: "⬇️",
+    transfer_out: "⬆️",
   };
   return icons[type] || "📝";
 }
@@ -122,7 +134,10 @@ function getTransactionTitle(type) {
     create: "Escrow Created",
     finish: "Escrow Finished",
     cancel: "Escrow Cancelled",
-    purchase: "XLUSD Purchased"
+    purchase: "XLUSD Purchased",
+    withdrawal: "XLUSD Withdrawn",
+    transfer_in: "Transfer Received",
+    transfer_out: "Transfer Sent",
   };
   return titles[type] || "Transaction";
 }

@@ -61,20 +61,36 @@ async function loadSettings() {
         document.getElementById("emailNotifications").checked = data.settings.emailNotifications !== false;
         document.getElementById("transactionAlerts").checked = data.settings.transactionAlerts !== false;
         document.getElementById("networkSelect").value = data.settings.network || "testnet";
+        const addrInput = document.getElementById("xrplAddressInput");
+        if (addrInput) addrInput.value = data.settings.defaultXrplAddress || "";
+        renderXrplStatus(data.settings);
       }
-    }
-
-    // Load XRPL address
-    const addressRes = await fetch(`${API}/debug/payer`, {
-      credentials: "include",
-    });
-    if (addressRes.ok) {
-      const addressData = await addressRes.json();
-      document.getElementById("xrplAddress").textContent = addressData.payerAddress || "Not configured";
     }
   } catch (err) {
     console.error("Failed to load settings:", err);
   }
+}
+
+function renderXrplStatus(settings) {
+  const el = document.getElementById("xrplAddressStatus");
+  if (!el) return;
+  const currentAddr = document.getElementById("xrplAddressInput")?.value?.trim() || "";
+  const addr = String(settings?.defaultXrplAddress || currentAddr || "").trim();
+  const verified = settings?.defaultXrplVerified === true;
+  const at = settings?.defaultXrplVerifiedAt;
+
+  if (!addr) {
+    el.textContent = "No address set";
+    el.style.color = "#718096";
+    return;
+  }
+  if (verified) {
+    el.textContent = `✅ Verified on ledger${at ? ` • ${new Date(at).toLocaleString()}` : ""}`;
+    el.style.color = "#10b981";
+    return;
+  }
+  el.textContent = "Not verified";
+  el.style.color = "#f59e0b";
 }
 
 // Save settings
@@ -83,6 +99,7 @@ async function saveSettings() {
     emailNotifications: document.getElementById("emailNotifications").checked,
     transactionAlerts: document.getElementById("transactionAlerts").checked,
     network: document.getElementById("networkSelect").value,
+    defaultXrplAddress: document.getElementById("xrplAddressInput")?.value?.trim() || "",
   };
 
   try {
@@ -142,6 +159,60 @@ document.getElementById("btnDeleteAccount").addEventListener("click", () => {
 document.getElementById("emailNotifications").addEventListener("change", saveSettings);
 document.getElementById("transactionAlerts").addEventListener("change", saveSettings);
 document.getElementById("networkSelect").addEventListener("change", saveSettings);
+document.getElementById("xrplAddressInput")?.addEventListener("change", saveSettings);
+document.getElementById("xrplAddressInput")?.addEventListener("blur", saveSettings);
+document.getElementById("xrplAddressInput")?.addEventListener("input", () => {
+  // Update UI status immediately while typing
+  renderXrplStatus({ defaultXrplVerified: false, defaultXrplVerifiedAt: null });
+});
+
+// Verify address (ledger existence/activation check)
+document.getElementById("btnVerifyXrplAddress")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btnVerifyXrplAddress");
+  const input = document.getElementById("xrplAddressInput");
+  const address = input?.value?.trim() || "";
+
+  if (!address) {
+    showNotification("Please enter an XRPL address first", true);
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Verifying...";
+  }
+
+  try {
+    const res = await fetch(`${API}/api/settings/verify-address`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ address }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      showNotification(data.error || "Verification failed", true);
+      renderXrplStatus({ defaultXrplAddress: address, defaultXrplVerified: false });
+      return;
+    }
+
+    if (data.verified) {
+      showNotification(`Verified! Balance: ${Number(data.balanceXrp || 0).toFixed(2)} XRP`);
+      // Reload from server so timestamp matches DB
+      loadSettings();
+    } else {
+      showNotification(data.hint || "Not activated on ledger", true);
+      renderXrplStatus({ defaultXrplAddress: address, defaultXrplVerified: false });
+    }
+  } catch (err) {
+    showNotification(`Error verifying address: ${err?.message || "Failed to reach backend"} (${API})`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Verify";
+    }
+  }
+});
 
 function showNotification(message, isError = false) {
   const notification = document.createElement("div");
