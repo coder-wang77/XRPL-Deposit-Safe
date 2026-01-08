@@ -19,6 +19,10 @@
           <span class="menu-icon">📊</span>
           <span>Dashboard</span>
         </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
         <a href="history.html" class="menu-item" data-page="history">
           <span class="menu-icon">📜</span>
           <span>History</span>
@@ -26,18 +30,6 @@
         <a href="settings.html" class="menu-item" data-page="settings">
           <span class="menu-icon">⚙️</span>
           <span>Settings</span>
-        </a>
-        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
-          <span class="menu-icon">💰</span>
-          <span>Buy XLUSD</span>
-        </a>
-        <a href="withdraw.html" class="menu-item" data-page="withdraw">
-          <span class="menu-icon">💸</span>
-          <span>Withdraw</span>
-        </a>
-        <a href="profile.html" class="menu-item" data-page="profile">
-          <span class="menu-icon">👤</span>
-          <span>Profile</span>
         </a>
       </div>
 
@@ -70,31 +62,17 @@
             <span class="balance-label">XLUSD Balance:</span>
             <span class="balance-value" id="xlusdBalance">Loading...</span>
           </div>
-          <button id="btnBuyXLUSD" class="btn-buy">💳 Buy XLUSD</button>
+          <button id="btnBuyXLUSD" class="btn-buy">🏦 XLUSD Deposit / Withdraw</button>
         </div>
       </div>
 
       <!-- Statistics Cards -->
       <div class="stats-grid">
         <div class="stat-card">
-          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">📦</div>
+          <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">🪙</div>
           <div class="stat-content">
-            <div class="stat-label">Total Escrows</div>
-            <div class="stat-value" id="totalEscrows">0</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">💵</div>
-          <div class="stat-content">
-            <div class="stat-label">Total Value</div>
-            <div class="stat-value" id="totalValue">0 XRP</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">💰</div>
-          <div class="stat-content">
-            <div class="stat-label">XRP Wallet Balance</div>
-            <div class="stat-value" id="xrpWalletBalance">-</div>
+            <div class="stat-label">XLUSD Wallet</div>
+            <div class="stat-value" id="xlusdWalletBalance">-</div>
           </div>
         </div>
         <div class="stat-card">
@@ -139,8 +117,8 @@
             <label style="color: rgba(255,255,255,0.9);">Service Provider XRPL Address</label>
             <input id="qa_provider" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
             
-            <label style="color: rgba(255,255,255,0.9);">Payment Amount (XRP)</label>
-            <input id="qa_amount" type="number" step="0.000001" min="0.000001" placeholder="100.0" style="margin-bottom: 12px;" autocomplete="off" />
+            <label style="color: rgba(255,255,255,0.9);">Payment Amount (XLUSD)</label>
+            <input id="qa_amount" type="number" step="0.01" min="0.01" placeholder="100.00" style="margin-bottom: 12px;" autocomplete="off" />
             
             <label style="color: rgba(255,255,255,0.9);">Deadline (refund available after)</label>
             <input id="qa_deadline" type="datetime-local" style="margin-bottom: 16px;" />
@@ -150,9 +128,7 @@
               💡 Leave empty if you don't need requirements. Service provider can claim payment anytime before deadline.
             </p>
             <div id="qa_checklist" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 12px; min-height: 60px;">
-              <p style="font-size: 11px; color: rgba(255,255,255,0.6); font-style: italic; margin: 0;">
-                No requirements added. Click "Add Requirement" to add quality checks.
-              </p>
+              <!-- JS will initialize this with a requirement editor -->
             </div>
             <button type="button" id="btnAddRequirement" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 12px;">
               ➕ Add Requirement (Optional)
@@ -171,30 +147,15 @@
             </div>
           </div>
           
-          <!-- Client Side: View AI Verification Status -->
+          <!-- Client Side: Refund after deadline (time-based) -->
           <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px;">
-            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">🤖 AI Verification Status</h4>
+            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">🕒 As Client (Refund After Deadline)</h4>
             
             <label style="color: rgba(255,255,255,0.9);">Escrow Owner (Your address)</label>
             <input id="qa_approve_owner" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
             
             <label style="color: rgba(255,255,255,0.9);">Escrow Sequence</label>
             <input id="qa_approve_seq" type="number" placeholder="123" min="1" style="margin-bottom: 12px;" autocomplete="off" />
-            
-            <label style="color: rgba(255,255,255,0.9); margin-bottom: 8px; display: block;">AI Verification Results:</label>
-            <div id="qa_verify_checklist" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-bottom: 12px; min-height: 80px;">
-              <p style="font-size: 12px; color: rgba(255,255,255,0.7); margin: 0; font-style: italic;">
-                Enter escrow sequence to view AI verification status...
-              </p>
-            </div>
-            
-            <button id="btnQALoadRequirements" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 12px;">
-              🔍 View AI Verification Status
-            </button>
-            
-            <button id="btnQATriggerAI" style="width: 100%; background: #3b82f6; color: white; font-weight: 700; margin-bottom: 12px;">
-              🤖 Re-run AI Verification
-            </button>
             
             <button id="btnQARefund" style="width: 100%; background: #ef4444; color: white; font-weight: 700;">
               ❌ Refund (After Deadline)
@@ -203,22 +164,34 @@
             <div class="result" id="resQAApprove" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>
           </div>
 
-          <!-- Service Provider Side: Claim Payment -->
+          <!-- Service Provider Side: Proof-gated claim (time-based + conditional) -->
           <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px;">
-            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">💰 As Service Provider (Claim Payment)</h4>
+            <h4 style="color: white; margin: 0 0 16px; font-size: 16px;">💰 As Service Provider (Submit Proof & Claim)</h4>
             
             <label style="color: rgba(255,255,255,0.9);">Escrow Owner (Client address)</label>
             <input id="qa_claim_owner" placeholder="r..." style="margin-bottom: 12px;" autocomplete="off" />
             
             <label style="color: rgba(255,255,255,0.9);">Escrow Sequence</label>
             <input id="qa_claim_seq" type="number" placeholder="123" min="1" style="margin-bottom: 16px;" autocomplete="off" />
+
+            <label style="color: rgba(255,255,255,0.9);">Proof of Work (required)</label>
+            <textarea id="qa_proof_text" rows="4" placeholder="Describe what you delivered, how it meets the requirements, and where to find it..."
+              style="width: 100%; padding: 10px; border: none; border-radius: 8px; background: rgba(255,255,255,0.95); color: #1a202c; font-size: 13px; resize: vertical; line-height: 1.4; margin-bottom: 10px;"></textarea>
+
+            <label style="color: rgba(255,255,255,0.9);">Evidence Links (photos/PDF URLs)</label>
+            <div id="qa_proof_links" style="display:flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
+              <input class="qa-proof-link" type="url" placeholder="https://... (optional)" style="padding: 10px; border: none; border-radius: 8px; background: rgba(255,255,255,0.95); color: #1a202c; font-size: 13px;" />
+            </div>
+            <button type="button" id="btnQAAddProofLink" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 12px;">
+              ➕ Add another link
+            </button>
             
             <button id="btnQAClaim" style="width: 100%; background: #3b82f6; color: white; font-weight: 700;">
-              💰 Claim Payment
+              📤 Submit Proof & Claim
             </button>
             
             <p style="font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 12px; margin-bottom: 0;">
-              ⚠️ If escrow has requirements, you can only claim after client verifies them all. You can only claim BEFORE the deadline passes. After deadline, the client can refund.
+              ✅ If you submit proof and the AI validates all requirements <strong>before the deadline</strong>, the platform unlocks the escrow and credits you in XLUSD.
             </p>
             
             <div class="result" id="resQAClaim" style="margin-top: 12px; background: rgba(255,255,255,0.2); color: white;"></div>

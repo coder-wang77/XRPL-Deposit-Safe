@@ -7,6 +7,7 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 
 import db from "./db.js";
+import dbPromise from "./utils/db-promise.js";
 import {
   getClient,
   createEscrow,
@@ -19,10 +20,212 @@ import {
   createQAEscrow,
 } from "./xrpl.js";
 import AIChecker from "./ai-checker.js";
+import {
+  isValidXRPLAddress,
+  isValidXRPLSeed,
+  normalizeSeed,
+  isValidAmount,
+  isValidUnixTimestamp,
+  isValidEmail,
+  isValidPaymentMethod,
+  isValidWithdrawalMethod,
+} from "./utils/validation.js";
+import {
+  XRPL_CONSTANTS,
+  DEFAULT_XLUSD_ISSUER,
+  XLUSD_CURRENCY,
+  XLUSD_PRICE_USD,
+  PAYMENT_METHODS,
+  WITHDRAWAL_METHODS,
+  PAYMENT_STATUS,
+  WITHDRAWAL_STATUS,
+  CORS_ALLOWED_ORIGINS,
+  CORS_DEV_PATTERNS,
+} from "./utils/constants.js";
+
+// ======================
+// XLUSD conversion helpers (XRP -> XLUSD)
+// ======================
+
+// ======================
+// Fake Bank helpers (USD ledger)
+// ======================
+
+async function recordBankTransaction({ userId, direction, amountUsd, reference = null, metadata = {} }) {
+  if (!userId) throw new Error("recordBankTransaction: missing userId");
+  const amt = Number(amountUsd);
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error("recordBankTransaction: invalid amountUsd");
+  if (direction !== "in" && direction !== "out") throw new Error("recordBankTransaction: invalid direction");
+
+  // Avoid double-recording if the same reference is reused (best-effort)
+  if (reference) {
+    const existing = await dbPromise.get(
+      `SELECT id FROM bank_transactions WHERE reference = ? AND direction = ? LIMIT 1`,
+      [reference, direction]
+    );
+    if (existing?.id) return;
+  }
+
+  await dbPromise.run(
+    `INSERT INTO bank_transactions (user_id, direction, amount_usd, reference, status, metadata)
+     VALUES (?, ?, ?, ?, 'completed', ?)`,
+    [userId, direction, amt, reference, JSON.stringify(metadata || {})]
+  );
+}
+
+async function getBankBalanceUsd(userId) {
+  const inRow = await dbPromise.get(
+    `SELECT COALESCE(SUM(amount_usd), 0) AS total_in
+     FROM bank_transactions
+     WHERE user_id = ? AND direction = 'in' AND status = 'completed'`,
+    [userId]
+  );
+  const outRow = await dbPromise.get(
+    `SELECT COALESCE(SUM(amount_usd), 0) AS total_out
+     FROM bank_transactions
+     WHERE user_id = ? AND direction = 'out' AND status = 'completed'`,
+    [userId]
+  );
+
+  const totalIn = Number(inRow?.total_in || 0);
+  const totalOut = Number(outRow?.total_out || 0);
+  return Math.max(0, totalIn - totalOut);
+}
+
+async function ensureXlusdTrustline({ client, wallet, issuer }) {
+  const lines = await client.request({
+    command: "account_lines",
+    account: wallet.classicAddress,
+    ledger_index: "validated",
+  });
+
+  const hasTrustline = lines.result.lines?.some(
+    (line) => line.currency === XLUSD_CURRENCY && line.account === issuer
+  );
+
+  if (hasTrustline) return { created: false };
+
+  const trustlineTx = {
+    TransactionType: "TrustSet",
+    Account: wallet.classicAddress,
+    LimitAmount: {
+      currency: XLUSD_CURRENCY,
+      issuer,
+      value: "1000000",
+    },
+  };
+
+  const prepared = await client.autofill(trustlineTx);
+  const signed = wallet.sign(prepared);
+  const result = await client.submitAndWait(signed.tx_blob);
+  const txResult = result.result?.meta?.TransactionResult;
+  if (txResult !== "tesSUCCESS") {
+    throw new Error(
+      `Failed to create XLUSD trustline: ${result.result?.engine_result_message || txResult}`
+    );
+  }
+
+  return { created: true, txHash: result.result?.hash };
+}
+
+function parseDeliveredXlusd(delivered) {
+  // delivered can be an object (IOU) or string (XRP drops)
+  if (!delivered) return null;
+  if (typeof delivered === "object" && delivered.currency === XLUSD_CURRENCY) {
+    const v = Number(delivered.value);
+    return Number.isFinite(v) ? v : null;
+  }
+  return null;
+}
+
+async function convertEscrowXrpToXlusd({ client, wallet, issuer, escrowAmountDrops }) {
+  if (!escrowAmountDrops) {
+    return { ok: false, skipped: true, reason: "Unknown escrow amount" };
+  }
+
+  // Safety: don't accidentally spend below base reserve
+  const reserveBufferXrp = 15; // conservative buffer on testnet
+  const reserveBufferDrops = BigInt(xrpl.xrpToDrops(String(reserveBufferXrp)));
+
+  const info = await client.request({
+    command: "account_info",
+    account: wallet.classicAddress,
+    ledger_index: "validated",
+  });
+
+  const balanceDrops = BigInt(info.result.account_data?.Balance || "0");
+  const spendableDrops = balanceDrops > reserveBufferDrops ? balanceDrops - reserveBufferDrops : 0n;
+  const escrowDrops = BigInt(String(escrowAmountDrops));
+  const maxSpendDrops = spendableDrops < escrowDrops ? spendableDrops : escrowDrops;
+
+  if (maxSpendDrops <= 0n) {
+    return { ok: false, skipped: true, reason: "Insufficient XRP to convert (reserve buffer)" };
+  }
+
+  await ensureXlusdTrustline({ client, wallet, issuer });
+
+  // Convert by making a self-payment that requests XLUSD and spends up to SendMax XRP.
+  // This uses rippled pathfinding + orderbook offers. Not guaranteed to fill (depends on liquidity).
+  const tx = {
+    TransactionType: "Payment",
+    Account: wallet.classicAddress,
+    Destination: wallet.classicAddress,
+    Amount: {
+      currency: XLUSD_CURRENCY,
+      issuer,
+      value: "1000000000", // very large; actual delivered is limited by SendMax + liquidity
+    },
+    SendMax: maxSpendDrops.toString(), // XRP drops
+    Flags: xrpl.PaymentFlags.tfPartialPayment,
+  };
+
+  const prepared = await client.autofill(tx);
+  const signed = wallet.sign(prepared);
+  const result = await client.submitAndWait(signed.tx_blob);
+  const txResult = result.result?.meta?.TransactionResult;
+
+  if (txResult !== "tesSUCCESS") {
+    return {
+      ok: false,
+      skipped: false,
+      txResult,
+      txHash: result.result?.hash,
+      error: result.result?.engine_result_message || `Conversion failed: ${txResult}`,
+    };
+  }
+
+  const meta = result.result?.meta;
+  const delivered = meta?.delivered_amount || meta?.DeliveredAmount || null;
+  const deliveredXlusd = parseDeliveredXlusd(delivered);
+
+  return {
+    ok: true,
+    txHash: result.result?.hash,
+    txResult,
+    spentXrp: Number(xrpl.dropsToXrp(maxSpendDrops.toString())),
+    deliveredXlusd,
+  };
+}
 
 dotenv.config();
 
 const app = express();
+
+function isValidUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// XLUSD <-> XRP conversion (fixed rate for now)
+// Interpretation: 2.12 XLUSD per 1 XRP  =>  xrp = xlusd / 2.12
+const XLUSD_PER_XRP = Number(process.env.XLUSD_PER_XRP || "2.12");
+if (!Number.isFinite(XLUSD_PER_XRP) || XLUSD_PER_XRP <= 0) {
+  throw new Error("Invalid XLUSD_PER_XRP. Must be a positive number.");
+}
 
 /* ======================
    LOGS
@@ -45,21 +248,10 @@ app.use(
       // Allow requests with no origin (like mobile apps, Postman, or file://)
       if (!origin) return callback(null, true);
       
-      // In development, allow common localhost ports and Live Server ports
-      const allowedOrigins = [
-        "http://127.0.0.1:5500",
-        "http://127.0.0.1:5501",
-        "http://127.0.0.1:5502",
-        "http://127.0.0.1:5503",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:3000",
-        "http://localhost:5500",
-        "http://localhost:5501",
-        "http://localhost:5502",
-        "http://localhost:5503",
-        "http://localhost:8080",
-        "http://localhost:3000",
-      ];
+      // Check allowed origins
+      if (CORS_ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
       
       // In development/demo, allow:
       // - localhost origins
@@ -70,21 +262,13 @@ app.use(
         if (
           origin.includes("localhost") || 
           origin.includes("127.0.0.1") ||
-          origin.includes(".ngrok-free.app") ||
-          origin.includes(".ngrok.io") ||
-          origin.includes(".loca.lt") ||
-          origin.includes(".trycloudflare.com") ||
-          origin.match(/^https?:\/\/[0-9a-f-]+\.loca\.lt$/) // localtunnel pattern
+          CORS_DEV_PATTERNS.some(pattern => pattern.test(origin))
         ) {
           return callback(null, true);
         }
       }
       
-      if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
+      callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
@@ -101,7 +285,7 @@ app.use(
       httpOnly: true,
       sameSite: "lax",
       secure: false, // set true only if HTTPS
-      maxAge: 1000 * 60 * 60 * 2, // default 2 hours
+      maxAge: XRPL_CONSTANTS.DEFAULT_SESSION_MAX_AGE, // default 2 hours
     },
   })
 );
@@ -157,17 +341,8 @@ function decryptSeed(encryptedSeed) {
   }
 }
 
-function validateXRPLSeed(seed) {
-  if (!seed || typeof seed !== "string") return false;
-  const trimmed = seed.trim();
-  // XRPL seeds start with 's' (family seed) or 'sEd' (Ed25519)
-  // Length can vary, so we'll be more flexible and let xrpl.Wallet.fromSeed validate
-  if (!trimmed.startsWith("s")) return false;
-  // Basic length check (seeds are typically 29-31 characters)
-  if (trimmed.length < 25 || trimmed.length > 35) return false;
-  // Allow base58 characters (excluding 0, O, I, l to avoid confusion)
-  return /^s[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed);
-}
+// Use validation utility instead
+const validateXRPLSeed = isValidXRPLSeed;
 
 /* ======================
    HEALTH
@@ -190,32 +365,35 @@ app.post("/api/signup", async (req, res) => {
       return res.status(400).json({ error: "Email and password required" });
     }
 
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: "Invalid email format" });
+    }
+
     const cleanEmail = email.toLowerCase().trim();
     const hash = await bcrypt.hash(password, 12);
 
-    db.run(
-      "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-      [cleanEmail, hash],
-      function (err) {
-        if (err) {
-          if (err.message.includes("UNIQUE")) {
-            return res.status(409).json({ error: "Email already exists" });
-          }
-          console.error("DB INSERT ERROR:", err);
-          return res.status(500).json({ error: "Database error" });
-        }
+    try {
+      const result = await dbPromise.run(
+        "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+        [cleanEmail, hash]
+      );
 
-        // session
-        req.session.user = { id: this.lastID, email: cleanEmail };
+      // session
+      req.session.user = { id: result.lastID, email: cleanEmail };
 
-        // remember me: 7 days
-        if (rememberMe) {
-          req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 7;
-        }
-
-        return res.json({ ok: true, user: { email: cleanEmail } });
+      // remember me: 7 days
+      if (rememberMe) {
+        req.session.cookie.maxAge = XRPL_CONSTANTS.REMEMBER_ME_MAX_AGE;
       }
-    );
+
+      return res.json({ ok: true, user: { email: cleanEmail } });
+    } catch (dbErr) {
+      if (dbErr.message.includes("UNIQUE")) {
+        return res.status(409).json({ error: "Email already exists" });
+      }
+      console.error("DB INSERT ERROR:", dbErr);
+      return res.status(500).json({ error: "Database error" });
+    }
   } catch (e) {
     console.error("SIGNUP ERROR:", e);
     return res.status(500).json({ error: "Server error" });
@@ -223,20 +401,17 @@ app.post("/api/signup", async (req, res) => {
 });
 
 // LOGIN
-app.post("/api/login", (req, res) => {
-  const { email, password, rememberMe } = req.body || {};
+app.post("/api/login", async (req, res) => {
+  try {
+    const { email, password, rememberMe } = req.body || {};
 
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password required" });
-  }
-
-  const cleanEmail = email.toLowerCase().trim();
-
-  db.get("SELECT * FROM users WHERE email = ?", [cleanEmail], async (err, user) => {
-    if (err) {
-      console.error("DB GET ERROR:", err);
-      return res.status(500).json({ error: "Database error" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
     }
+
+    const cleanEmail = email.toLowerCase().trim();
+
+    const user = await dbPromise.get("SELECT * FROM users WHERE email = ?", [cleanEmail]);
 
     if (!user) {
       return res.status(401).json({ error: "Invalid email or password" });
@@ -251,41 +426,43 @@ app.post("/api/login", (req, res) => {
 
     // remember me: 7 days
     if (rememberMe) {
-      req.session.cookie.maxAge = 1000 * 60 * 60 * 24 * 7;
+      req.session.cookie.maxAge = XRPL_CONSTANTS.REMEMBER_ME_MAX_AGE;
     } else {
-      req.session.cookie.maxAge = 1000 * 60 * 60 * 2; // 2 hours
+      req.session.cookie.maxAge = XRPL_CONSTANTS.DEFAULT_SESSION_MAX_AGE; // 2 hours
     }
 
     return res.json({ ok: true, user: { email: user.email } });
-  });
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    return res.status(500).json({ error: "Database error" });
+  }
 });
 
 // WHO AM I
-app.get("/api/me", (req, res) => {
+app.get("/api/me", async (req, res) => {
   if (!req.session?.user) {
     return res.status(401).json({ error: "Not logged in" });
   }
   
-  // Get wallet info if connected
-  db.get(
-    "SELECT wallet_address, is_verified FROM user_wallets WHERE user_id = ?",
-    [req.session.user.id],
-    (err, wallet) => {
-      if (err) {
-        console.error("Error fetching wallet:", err);
-        return res.json({ ok: true, user: req.session.user, wallet: null });
-      }
-      
-      return res.json({
-        ok: true,
-        user: req.session.user,
-        wallet: wallet ? {
-          address: wallet.wallet_address,
-          isVerified: !!wallet.is_verified,
-        } : null,
-      });
-    }
-  );
+  try {
+    // Get wallet info if connected
+    const wallet = await dbPromise.get(
+      "SELECT wallet_address, is_verified FROM user_wallets WHERE user_id = ?",
+      [req.session.user.id]
+    );
+    
+    return res.json({
+      ok: true,
+      user: req.session.user,
+      wallet: wallet ? {
+        address: wallet.wallet_address,
+        isVerified: !!wallet.is_verified,
+      } : null,
+    });
+  } catch (err) {
+    console.error("Error fetching wallet:", err);
+    return res.json({ ok: true, user: req.session.user, wallet: null });
+  }
 });
 
 /* ======================
@@ -303,24 +480,12 @@ app.post("/api/wallet/connect", requireAuth, async (req, res) => {
     }
 
     // Normalize the seed - remove all whitespace and ensure proper encoding
-    let trimmedSeed = String(seed).trim().replace(/\s+/g, "");
-    
-    // Remove any invisible/hidden characters (zero-width spaces, etc.)
-    trimmedSeed = trimmedSeed.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, "");
-    
-    // Remove any non-printable characters
-    trimmedSeed = trimmedSeed.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+    const trimmedSeed = normalizeSeed(seed);
 
     // Basic format check
-    if (!trimmedSeed || trimmedSeed.length < 20) {
+    if (!isValidXRPLSeed(trimmedSeed)) {
       return res.status(400).json({ 
-        error: "Invalid wallet seed format. XRPL seeds must start with 's' and be at least 20 characters long. Make sure you're copying the seed (secret), not the address." 
-      });
-    }
-
-    if (!trimmedSeed.startsWith("s")) {
-      return res.status(400).json({ 
-        error: "Invalid wallet seed format. XRPL seeds must start with 's'. Make sure you're copying the SEED (secret starting with 's'), not the wallet address (starting with 'r')." 
+        error: "Invalid wallet seed format. XRPL seeds must start with 's' and be 25-35 characters long. Make sure you're copying the seed (secret), not the address." 
       });
     }
 
@@ -464,7 +629,6 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
               const userWallet = xrpl.Wallet.fromSeed(seed);
               
               if (userWallet.classicAddress !== wallet.wallet_address) {
-                if (client) await client.disconnect();
                 return res.status(400).json({ 
                   ok: false,
                   error: "Wallet seed doesn't match stored address. Please reconnect your wallet." 
@@ -472,7 +636,6 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
               }
             } catch (decryptErr) {
               console.error("Decrypt error during verify:", decryptErr);
-              if (client) await client.disconnect();
               return res.status(500).json({ ok: false, error: "Failed to validate wallet seed" });
             }
 
@@ -485,10 +648,8 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
               async function (updateErr) {
                 if (updateErr) {
                   console.error("Verify update error:", updateErr);
-                  if (client) await client.disconnect();
                   return res.status(500).json({ ok: false, error: "Failed to update verification status" });
                 }
-                if (client) await client.disconnect();
                 return res.json({
                   ok: true,
                   wallet: {
@@ -505,8 +666,6 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
           }
         } catch (verifyErr) {
           console.error("Verification error:", verifyErr);
-          if (client) await client.disconnect();
-          // Make sure to send error response after disconnecting
           return res.status(400).json({ 
             ok: false,
             error: "Verification failed: " + (verifyErr.message || verifyErr.toString()),
@@ -516,9 +675,9 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
       }
     );
   } catch (err) {
-    if (client) await client.disconnect();
     return res.status(500).json({ error: err.message || "Server error" });
   }
+  // Note: Client connection is reused via connection pool
 });
 
 // GET WALLET STATUS (balance, verification status, etc.)
@@ -666,9 +825,9 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
       }
     );
   } catch (err) {
-    if (client) await client.disconnect();
     return res.status(500).json({ error: err.message || "Server error" });
   }
+  // Note: Client connection is reused via connection pool
 });
 
 // GET USER WALLET
@@ -759,7 +918,7 @@ app.post("/api/logout", (req, res) => {
 app.post("/escrow/create", requireAuth, async (req, res) => {
   let client;
   try {
-    const { payeeAddress, amountXrp, finishAfterUnix, cancelAfterUnix, condition } =
+    const { payeeAddress, amountXrp, amountXlusd, finishAfterUnix, cancelAfterUnix, condition } =
       req.body || {};
     const userId = req.session.user.id;
 
@@ -768,12 +927,21 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid payeeAddress" });
     }
 
-    if (!amountXrp) {
-      return res.status(400).json({ error: "Missing amountXrp" });
+    if (amountXrp === undefined && amountXlusd === undefined) {
+      return res.status(400).json({ error: "Missing amountXlusd" });
     }
 
     if (!finishAfterUnix) {
       return res.status(400).json({ error: "Missing finishAfterUnix" });
+    }
+
+    const amountToLockXrp =
+      amountXlusd !== undefined
+        ? Number(amountXlusd) / XLUSD_PER_XRP
+        : Number(amountXrp);
+
+    if (!Number.isFinite(amountToLockXrp) || amountToLockXrp <= 0) {
+      return res.status(400).json({ error: "Invalid amountXlusd" });
     }
 
     // Try to use user's wallet first (including unverified), fallback to server wallet
@@ -802,7 +970,7 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       client,
       payerWallet,
       payeeAddress: payeeAddress.trim(),
-      amountXrp,
+      amountXrp: amountToLockXrp,
       finishAfterUnix,
       cancelAfterUnix,
       condition: condition || null, // Optional conditional escrow
@@ -826,7 +994,9 @@ app.post("/escrow/create", requireAuth, async (req, res) => {
       txHash: result.result?.hash,
       offerSequence,
       txResult,
-      amountXrp: Number(amountXrp),
+      amountXlusd: amountXlusd !== undefined ? Number(amountXlusd) : null,
+      amountXrpLocked: Number(amountToLockXrp),
+      xlusdPerXrp: XLUSD_PER_XRP,
       payeeAddress: payeeAddress.trim(),
       hasCondition: !!condition,
       condition: condition || null,
@@ -867,6 +1037,7 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
 
     // Try to use user's wallet first (for service provider finishing escrow)
     let payeeWallet;
+    let usingFallbackWallet = false;
     try {
       const userWallet = await new Promise((resolve, reject) => {
         getUserWalletAny(userId, (err, wallet) => {
@@ -884,6 +1055,7 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
       }
       const seed = process.env.PAYEE_SEED || process.env.PAYER_SEED;
       payeeWallet = xrpl.Wallet.fromSeed(seed);
+      usingFallbackWallet = true;
     }
 
     client = await getClient();
@@ -897,12 +1069,45 @@ app.post("/escrow/finish", requireAuth, async (req, res) => {
     });
 
     const isSuccess = out.txResult === "tesSUCCESS";
-    
+
+    // Optional: auto-convert received XRP into XLUSD so balances don't fluctuate.
+    // Escrow itself remains XRP on-ledger (EscrowCreate only supports XRP).
+    let conversion = null;
+    const autoConvert = (process.env.AUTO_CONVERT_TO_XLUSD || "true") === "true";
+    if (isSuccess && autoConvert) {
+      if (usingFallbackWallet) {
+        conversion = {
+          ok: false,
+          skipped: true,
+          reason: "Using server fallback wallet; connect your own wallet to auto-convert on unlock",
+        };
+      } else {
+        try {
+          const issuer = process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER;
+          conversion = await convertEscrowXrpToXlusd({
+            client,
+            wallet: payeeWallet,
+            issuer,
+            escrowAmountDrops: out.escrowAmountDrops,
+          });
+        } catch (convErr) {
+          conversion = {
+            ok: false,
+            skipped: false,
+            error: convErr.message || String(convErr),
+          };
+        }
+      }
+    }
+
     return res.status(isSuccess ? 200 : 400).json({
       ok: isSuccess,
       txHash: out.hash,
       txResult: out.txResult,
       validated: out.validated,
+      escrowAmountDrops: out.escrowAmountDrops || null,
+      autoConvertedToXlusd: autoConvert,
+      conversion,
       error: isSuccess ? undefined : `Transaction failed: ${out.txResult}`,
     });
   } catch (err) {
@@ -1069,17 +1274,10 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
     }
 
     // Get user's verified wallet from database
-    const userId = req.session.user?.id;
-    const userWalletData = await new Promise((resolve, reject) => {
-      db.get(
-        "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
-        [userId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const userWalletData = await dbPromise.get(
+      "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+      [userId]
+    );
 
     if (!userWalletData) {
       return res.status(400).json({ 
@@ -1158,11 +1356,26 @@ app.post("/escrow/freelancer/create", requireAuth, async (req, res) => {
 // QA ESCROW - Store requirements in memory (in production, use database)
 const qaEscrowRequirements = {}; // {sequence: {requirements: [], preimage: string, condition: string}}
 
+// Cleanup old QA escrow requirements (older than 30 days)
+setInterval(() => {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  let cleaned = 0;
+  for (const [sequence, data] of Object.entries(qaEscrowRequirements)) {
+    if (data.createdAt && data.createdAt < thirtyDaysAgo) {
+      delete qaEscrowRequirements[sequence];
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`Cleaned up ${cleaned} old QA escrow requirements`);
+  }
+}, 24 * 60 * 60 * 1000); // Run daily
+
 // CREATE QA ESCROW (with requirements checklist)
 app.post("/escrow/qa/create", requireAuth, async (req, res) => {
   let client;
   try {
-    const { providerAddress, amountXrp, deadlineUnix, requirements } = req.body || {};
+    const { providerAddress, amountXrp, amountXlusd, deadlineUnix, requirements } = req.body || {};
     const userId = req.session.user.id;
 
     // Basic validation
@@ -1170,20 +1383,37 @@ app.post("/escrow/qa/create", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid providerAddress" });
     }
 
-    if (!amountXrp) {
-      return res.status(400).json({ error: "Missing amountXrp" });
+    // Accept XLUSD amounts (app-level) and convert to XRP for on-ledger escrow locking.
+    // NOTE: XRPL EscrowCreate only supports XRP; this is a UX abstraction.
+    if (amountXlusd === undefined && amountXrp === undefined) {
+      return res.status(400).json({ error: "Missing amountXlusd" });
     }
 
     if (!deadlineUnix) {
       return res.status(400).json({ error: "Missing deadlineUnix" });
     }
 
-    // Requirements are optional - if provided, must be valid
+    // Requirements are optional - allow rich requirements:
+    // - string: treated as { text: string, evidenceLinks: [] }
+    // - object: { text: string, evidenceLinks?: string[] }
     const validRequirements = [];
     if (requirements && Array.isArray(requirements)) {
-      const filtered = requirements.filter(req => req && typeof req === "string" && req.trim().length > 0);
-      if (filtered.length > 0) {
-        validRequirements.push(...filtered);
+      for (const req of requirements) {
+        if (!req) continue;
+        if (typeof req === "string") {
+          const text = req.trim();
+          if (text.length > 0) validRequirements.push({ text, evidenceLinks: [] });
+          continue;
+        }
+        if (typeof req === "object") {
+          const text = String(req.text || "").trim();
+          const evidenceLinks = Array.isArray(req.evidenceLinks)
+            ? req.evidenceLinks.map((u) => String(u || "").trim()).filter((u) => u.length > 0)
+            : [];
+          if (text.length > 0 || evidenceLinks.length > 0) {
+            validRequirements.push({ text, evidenceLinks });
+          }
+        }
       }
     }
 
@@ -1193,6 +1423,16 @@ app.post("/escrow/qa/create", requireAuth, async (req, res) => {
       return res.status(400).json({ 
         error: "deadlineUnix must be a future timestamp" 
       });
+    }
+
+    // Determine XRP amount to lock on-ledger (2.12 XLUSD per 1 XRP => xrp = xlusd / 2.12)
+    const xlusdAmount = amountXlusd !== undefined ? Number(amountXlusd) : null;
+    const xrpAmountFromClient = amountXrp !== undefined ? Number(amountXrp) : null;
+
+    const amountToLockXrp = xlusdAmount !== null ? xlusdAmount / XLUSD_PER_XRP : xrpAmountFromClient;
+
+    if (!Number.isFinite(amountToLockXrp) || amountToLockXrp <= 0) {
+      return res.status(400).json({ error: "Invalid amountXlusd" });
     }
 
     // Try to use user's wallet first (including unverified), fallback to server wallet
@@ -1233,7 +1473,7 @@ app.post("/escrow/qa/create", requireAuth, async (req, res) => {
           client,
           clientWallet,
           providerAddress: providerAddress.trim(),
-          amountXrp,
+          amountXrp: amountToLockXrp,
           deadlineUnix: deadline,
           preimage,
         })
@@ -1241,22 +1481,25 @@ app.post("/escrow/qa/create", requireAuth, async (req, res) => {
           client,
           payerWallet: clientWallet,
           payeeAddress: providerAddress.trim(),
-          amountXrp,
+          amountXrp: amountToLockXrp,
           finishAfterUnix: deadline, // Can finish anytime before deadline
           cancelAfterUnix: deadline + 1, // Can refund after deadline
           condition: null, // No condition - service provider can claim directly
         });
 
-    const txResult = result.result.result?.meta?.TransactionResult;
+    // createEscrow/createQAEscrow return { result: submitAndWaitResult, offerSequence, ... }
+    // submitAndWaitResult has shape: { result: { meta, hash, engine_result, engine_result_message, ... } }
+    const submitRes = result.result;
+    const txResult = submitRes?.result?.meta?.TransactionResult;
 
     if (txResult !== "tesSUCCESS") {
       return res.status(400).json({
         ok: false,
         txResult,
-        engine_result: result.result.result?.engine_result,
-        engine_result_message: result.result.result?.engine_result_message,
-        txHash: result.result.result?.hash,
-        error: result.result.result?.engine_result_message || `Transaction failed: ${txResult}`,
+        engine_result: submitRes?.result?.engine_result,
+        engine_result_message: submitRes?.result?.engine_result_message,
+        txHash: submitRes?.result?.hash,
+        error: submitRes?.result?.engine_result_message || `Transaction failed: ${txResult}`,
       });
     }
 
@@ -1266,18 +1509,24 @@ app.post("/escrow/qa/create", requireAuth, async (req, res) => {
       preimage, // Stored on server for automatic fulfillment when verified
       condition,
       userId, // Store user ID for security
+      ownerAddress: clientWallet.classicAddress,
       providerAddress: providerAddress.trim(),
       verifiedRequirements: {}, // Track which requirements are verified: {index: true}
       allVerified: false, // Flag when all requirements are verified
+      proofSubmissions: [], // [{ userId, proofText, proofLinks, createdAt }]
+      escrowFinished: false,
       createdAt: new Date().toISOString(),
     };
 
     return res.json({
       ok: true,
-      txHash: result.result.result?.hash,
+      txHash: submitRes?.result?.hash,
       offerSequence: result.offerSequence,
       txResult,
-      amountXrp: Number(amountXrp),
+      amountXlusd: xlusdAmount !== null ? Number(xlusdAmount) : null,
+      amountXrpLocked: Number(amountToLockXrp),
+      xlusdPerXrp: XLUSD_PER_XRP,
+      ownerAddress: clientWallet.classicAddress,
       providerAddress: providerAddress.trim(),
       // Preimage NOT returned to client - stored on server only
       condition, // Only if requirements exist
@@ -1332,13 +1581,212 @@ app.get("/escrow/qa/requirements/:sequence", requireAuth, (req, res) => {
   return res.json({
     ok: true,
     sequence,
-    requirements: escrowData.requirements,
+    requirements: escrowData.requirements, // [{ text, evidenceLinks }]
     verifiedRequirements: escrowData.verifiedRequirements || {},
     allVerified: escrowData.allVerified || false,
     aiVerificationStatus: escrowData.aiVerificationStatus || "pending",
     aiSummary: escrowData.aiSummary || null,
+    proofCount: escrowData.proofSubmissions?.length || 0,
+    escrowFinished: !!escrowData.escrowFinished,
     // Never return preimage - it's stored on server only
   });
+});
+
+// SERVICE PROVIDER: submit proof-of-work -> AI verifies -> if all verified, platform finishes escrow and credits provider (auto-convert to XLUSD)
+app.post("/escrow/qa/proof/submit", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const { sequence, proofText, proofLinks } = req.body || {};
+    const userId = req.session.user.id;
+
+    const seq = Number(sequence);
+    if (!Number.isFinite(seq) || seq <= 0) {
+      return res.status(400).json({ ok: false, error: "Invalid sequence" });
+    }
+
+    const escrowData = qaEscrowRequirements[seq];
+    if (!escrowData) {
+      return res.status(404).json({ ok: false, error: "Escrow requirements not found for this sequence" });
+    }
+
+    // Load provider wallet (must be verified to sign + receive XLUSD)
+    const walletRow = await dbPromise.get(
+      "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+      [userId]
+    );
+    if (!walletRow) {
+      return res.status(400).json({ ok: false, error: "No verified wallet found. Please connect and verify your XRPL wallet first." });
+    }
+
+    const providerWallet = xrpl.Wallet.fromSeed(decryptSeed(walletRow.encrypted_seed));
+    if (providerWallet.classicAddress !== escrowData.providerAddress) {
+      return res.status(403).json({ ok: false, error: "Not authorized: your wallet does not match the escrow provider address." });
+    }
+
+    const cleanText = String(proofText || "").trim();
+    const links = Array.isArray(proofLinks) ? proofLinks.map((u) => String(u || "").trim()).filter((u) => u.length > 0) : [];
+    const validLinks = links.filter(isValidUrl);
+
+    if (cleanText.length < 10 && validLinks.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Please submit proof: add a description (min 10 chars) and/or at least one valid link (photo/PDF).",
+      });
+    }
+
+    escrowData.proofSubmissions = escrowData.proofSubmissions || [];
+    escrowData.proofSubmissions.push({
+      userId,
+      proofText: cleanText,
+      proofLinks: validLinks,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Run AI verification (proof-aware)
+    escrowData.aiVerificationStatus = "in_progress";
+    client = await getClient();
+
+    const aiOut = await AIChecker.verifyAllRequirements(escrowData.requirements || [], {
+      sequence: seq,
+      providerAddress: escrowData.providerAddress,
+      proofText: cleanText,
+      proofLinks: validLinks,
+    });
+
+    escrowData.aiVerificationStatus = "completed";
+    escrowData.aiSummary = aiOut.summary;
+    escrowData.allVerified = !!aiOut.allVerified;
+    escrowData.verifiedRequirements = {};
+    (aiOut.results || []).forEach((r, idx) => {
+      escrowData.verifiedRequirements[idx] = r;
+    });
+
+    // If all verified, platform finishes escrow + converts to XLUSD
+    let finish = null;
+    let conversion = null;
+    if (escrowData.allVerified && !escrowData.escrowFinished) {
+      const finishOut = await finishEscrow({
+        client,
+        payeeWallet: providerWallet,
+        ownerAddress: escrowData.ownerAddress,
+        offerSequence: seq,
+        fulfillment: escrowData.preimage, // server-held preimage unlocks conditional escrow
+      });
+
+      finish = {
+        ok: finishOut.txResult === "tesSUCCESS",
+        txHash: finishOut.hash,
+        txResult: finishOut.txResult,
+        validated: finishOut.validated,
+      };
+
+      if (finish.ok) {
+        escrowData.escrowFinished = true;
+        const issuer = process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER;
+        conversion = await convertEscrowXrpToXlusd({
+          client,
+          wallet: providerWallet,
+          issuer,
+          escrowAmountDrops: finishOut.escrowAmountDrops,
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      sequence: seq,
+      ai: aiOut,
+      allVerified: escrowData.allVerified,
+      verifiedRequirements: escrowData.verifiedRequirements,
+      escrowFinished: escrowData.escrowFinished,
+      finish,
+      conversion,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
+  } finally {
+    // connection pool keeps client alive
+  }
+});
+
+// SERVICE PROVIDER: claim payment (only works after AI verified all requirements)
+app.post("/escrow/qa/claim", requireAuth, async (req, res) => {
+  let client;
+  try {
+    const { sequence } = req.body || {};
+    const userId = req.session.user.id;
+    const seq = Number(sequence);
+    if (!Number.isFinite(seq) || seq <= 0) {
+      return res.status(400).json({ ok: false, error: "Invalid sequence" });
+    }
+
+    const escrowData = qaEscrowRequirements[seq];
+    if (!escrowData) {
+      return res.status(404).json({ ok: false, error: "Escrow requirements not found for this sequence" });
+    }
+
+    if (!escrowData.allVerified) {
+      return res.status(400).json({ ok: false, error: "Cannot claim: requirements not verified by AI yet." });
+    }
+
+    // Must have submitted proof at least once
+    if (!escrowData.proofSubmissions || escrowData.proofSubmissions.length === 0) {
+      return res.status(400).json({ ok: false, error: "Cannot claim: no proof-of-work submitted yet." });
+    }
+
+    // Load provider wallet
+    const walletRow = await dbPromise.get(
+      "SELECT wallet_address, encrypted_seed, is_verified FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+      [userId]
+    );
+    if (!walletRow) {
+      return res.status(400).json({ ok: false, error: "No verified wallet found. Please connect and verify your XRPL wallet first." });
+    }
+
+    const providerWallet = xrpl.Wallet.fromSeed(decryptSeed(walletRow.encrypted_seed));
+    if (providerWallet.classicAddress !== escrowData.providerAddress) {
+      return res.status(403).json({ ok: false, error: "Not authorized: your wallet does not match the escrow provider address." });
+    }
+
+    if (escrowData.escrowFinished) {
+      return res.json({ ok: true, alreadyFinished: true, sequence: seq });
+    }
+
+    client = await getClient();
+    const finishOut = await finishEscrow({
+      client,
+      payeeWallet: providerWallet,
+      ownerAddress: escrowData.ownerAddress,
+      offerSequence: seq,
+      fulfillment: escrowData.preimage,
+    });
+
+    const finishOk = finishOut.txResult === "tesSUCCESS";
+    let conversion = null;
+    if (finishOk) {
+      escrowData.escrowFinished = true;
+      const issuer = process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER;
+      conversion = await convertEscrowXrpToXlusd({
+        client,
+        wallet: providerWallet,
+        issuer,
+        escrowAmountDrops: finishOut.escrowAmountDrops,
+      });
+    }
+
+    return res.status(finishOk ? 200 : 400).json({
+      ok: finishOk,
+      sequence: seq,
+      txHash: finishOut.hash,
+      txResult: finishOut.txResult,
+      validated: finishOut.validated,
+      conversion,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
+  } finally {
+    // connection pool keeps client alive
+  }
 });
 
 // Note: Release happens when freelancer uses /escrow/finish with the preimage
@@ -1356,40 +1804,25 @@ app.get("/api/xlusd/balance", requireAuth, async (req, res) => {
     const accountAddress = req.query.address;
     
     // Calculate simulated balance from database (completed purchases - completed withdrawals)
-    const simulatedBalance = await new Promise((resolve, reject) => {
-      // Get sum of completed purchases
-      db.get(
+    // Parallelize queries for better performance
+    const [purchaseRow, withdrawalRow] = await Promise.all([
+      dbPromise.get(
         `SELECT COALESCE(SUM(amount_xlusd), 0) as total_purchases 
          FROM payments 
-         WHERE user_id = ? AND status = 'completed'`,
-        [userId],
-        (err, purchaseRow) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          
-          // Get sum of completed withdrawals
-          db.get(
-            `SELECT COALESCE(SUM(amount_xlusd), 0) as total_withdrawals 
-             FROM withdrawals 
-             WHERE user_id = ? AND status IN ('completed', 'processing')`,
-            [userId],
-            (err2, withdrawalRow) => {
-              if (err2) {
-                reject(err2);
-                return;
-              }
-              
-              const purchases = purchaseRow?.total_purchases || 0;
-              const withdrawals = withdrawalRow?.total_withdrawals || 0;
-              const simulated = Math.max(0, purchases - withdrawals);
-              resolve(simulated);
-            }
-          );
-        }
-      );
-    });
+         WHERE user_id = ? AND status = ?`,
+        [userId, PAYMENT_STATUS.COMPLETED]
+      ),
+      dbPromise.get(
+        `SELECT COALESCE(SUM(amount_xlusd), 0) as total_withdrawals 
+         FROM withdrawals 
+         WHERE user_id = ? AND status IN (?, ?)`,
+        [userId, WITHDRAWAL_STATUS.COMPLETED, WITHDRAWAL_STATUS.PROCESSING]
+      ),
+    ]);
+    
+    const purchases = purchaseRow?.total_purchases || 0;
+    const withdrawals = withdrawalRow?.total_withdrawals || 0;
+    const simulatedBalance = Math.max(0, purchases - withdrawals);
     
     // Try to get real XRPL balance if address is provided or user has wallet
     let xrplBalance = 0;
@@ -1397,16 +1830,10 @@ app.get("/api/xlusd/balance", requireAuth, async (req, res) => {
     
     // If no address provided, try to get user's wallet address
     if (!address) {
-      const userWalletData = await new Promise((resolve, reject) => {
-        db.get(
-          "SELECT wallet_address FROM user_wallets WHERE user_id = ? AND is_verified = 1",
-          [userId],
-          (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-          }
-        );
-      });
+      const userWalletData = await dbPromise.get(
+        "SELECT wallet_address FROM user_wallets WHERE user_id = ? AND is_verified = 1",
+        [userId]
+      );
       
       if (userWalletData) {
         address = userWalletData.wallet_address;
@@ -1428,12 +1855,11 @@ app.get("/api/xlusd/balance", requireAuth, async (req, res) => {
           ledger_index: "validated",
         });
 
-        const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
-        const xlusdCurrency = "XLUSD";
+        const xlusdIssuer = process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER;
 
         const xlusdLine = accountLines.result.lines?.find(
           (line) =>
-            line.currency === xlusdCurrency &&
+            line.currency === XLUSD_CURRENCY &&
             line.account === xlusdIssuer
         );
 
@@ -1447,24 +1873,20 @@ app.get("/api/xlusd/balance", requireAuth, async (req, res) => {
     // Total balance = XRPL balance + simulated balance
     // In simulate mode, XRPL balance will be 0, so total = simulated
     const totalBalance = xrplBalance + simulatedBalance;
-    
-    const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
-    const xlusdCurrency = "XLUSD";
 
     return res.json({
       ok: true,
       balance: totalBalance,
       xrplBalance: xrplBalance,
       simulatedBalance: simulatedBalance,
-      currency: xlusdCurrency,
-      issuer: xlusdIssuer,
+      currency: XLUSD_CURRENCY,
+      issuer: process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER,
       account: address || null,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
-  } finally {
-    if (client) await client.disconnect();
   }
+  // Note: Client connection is reused via connection pool, no need to disconnect
 });
 
 // PURCHASE XLUSD (Process payment via credit card or PayNow)
@@ -1474,11 +1896,11 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     const { amountXlusd, paymentMethod, cardDetails, paynowRef } = req.body || {};
     const userId = req.session.user?.id;
 
-    if (!amountXlusd || !Number.isFinite(Number(amountXlusd)) || Number(amountXlusd) <= 0) {
+    if (!isValidAmount(amountXlusd)) {
       return res.status(400).json({ error: "Invalid amountXlusd" });
     }
 
-    if (!paymentMethod || !["creditcard", "paynow"].includes(paymentMethod)) {
+    if (!isValidPaymentMethod(paymentMethod)) {
       return res.status(400).json({ error: "Invalid payment method" });
     }
 
@@ -1532,22 +1954,12 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     let paymentRecordId;
 
     // Record payment in database
-    await new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO payments (user_id, amount_xlusd, amount_usd, payment_method, status) 
-         VALUES (?, ?, ?, ?, ?)`,
-        [userId, amountXlusd, amountUsd, paymentMethod, "pending"],
-        function (err) {
-          if (err) {
-            console.error("Failed to record payment:", err);
-            reject(err);
-          } else {
-            paymentRecordId = this.lastID;
-            resolve();
-          }
-        }
-      );
-    });
+    const paymentResult = await dbPromise.run(
+      `INSERT INTO payments (user_id, amount_xlusd, amount_usd, payment_method, status) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId, amountXlusd, amountUsd, paymentMethod, PAYMENT_STATUS.PENDING]
+    );
+    paymentRecordId = paymentResult.lastID;
 
     if (paymentMethod === "creditcard") {
       // Card details are optional if:
@@ -1568,7 +1980,7 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
       console.log(`Card payment: testMode=${testMode}, hasStripe=${hasStripe}, hasCardDetails=${!!cardDetails}`);
 
       // Stripe integration (if STRIPE_SECRET_KEY is set and not in test mode)
-      if (process.env.STRIPE_SECRET_KEY && !testMode) {
+      if (hasStripe && !testMode) {
         try {
           // Dynamic import for Stripe (ES module compatible)
           const stripeModule = await import("stripe");
@@ -1591,7 +2003,7 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
           // For now, we'll use the payment intent ID
           // In production, you'd confirm the payment on the frontend first using Stripe.js
           paymentId = paymentIntent.id;
-          paymentStatus = paymentIntent.status === "succeeded" ? "completed" : "pending";
+          paymentStatus = paymentIntent.status === "succeeded" ? PAYMENT_STATUS.COMPLETED : PAYMENT_STATUS.PENDING;
           
           // If payment requires confirmation, return client_secret for frontend
           if (paymentIntent.status === "requires_payment_method") {
@@ -1607,13 +2019,13 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
           // Fall back to simulated payment for development
           console.log("⚠️  Stripe error occurred. Using simulated payment.");
           paymentId = `cc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          paymentStatus = "completed";
+          paymentStatus = PAYMENT_STATUS.COMPLETED;
         }
       } else {
         // Simulated payment for development/test mode
         console.log("💰 TEST MODE: Using fake payment (no real money charged)");
         paymentId = `cc_test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        paymentStatus = "completed";
+        paymentStatus = PAYMENT_STATUS.COMPLETED;
       }
       
     } else if (paymentMethod === "paynow") {
@@ -1630,22 +2042,38 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
       } else {
         paymentId = `pn_${paynowRef || Date.now()}`;
       }
-      paymentStatus = "completed";
+      paymentStatus = PAYMENT_STATUS.COMPLETED;
       
       // TODO: Verify PayNow payment via API
       // In production, you'd verify the payment with PayNow gateway
     }
 
-    if (paymentStatus !== "completed") {
+    if (paymentStatus !== PAYMENT_STATUS.COMPLETED) {
       // Update payment status to failed
       if (paymentRecordId) {
-        db.run(
-          `UPDATE payments SET status = 'failed', payment_id = ? WHERE id = ?`,
-          [paymentId || null, paymentRecordId]
+        await dbPromise.run(
+          `UPDATE payments SET status = ?, payment_id = ? WHERE id = ?`,
+          [PAYMENT_STATUS.FAILED, paymentId || null, paymentRecordId]
         );
       }
       return res.status(400).json({ error: "Payment processing failed" });
     }
+
+    // Fake bank: collect USD when payment succeeds
+    await recordBankTransaction({
+      userId,
+      direction: "in",
+      amountUsd,
+      reference: paymentId || `payment_${paymentRecordId}`,
+      metadata: {
+        type: "xlusd_purchase",
+        paymentMethod,
+        amountXlusd: Number(amountXlusd),
+        paymentRecordId,
+        simulated: simulateXlusd,
+        testMode,
+      },
+    });
 
     // After payment is confirmed, mint/transfer XLUSD to user's account
     // In simulate mode, just record in database without XRPL transaction
@@ -1653,46 +2081,31 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
       console.log("💰 SIMULATE MODE: Recording XLUSD purchase in database (no XRPL transaction)");
       console.log(`   Amount: ${amountXlusd} XLUSD, User: ${userId}, Wallet: ${recipientAddress || 'none (simulated)'}`);
       
-      // Update payment record with success - await to ensure it completes
+      // Update payment record with success
       if (paymentRecordId) {
-        await new Promise((resolve, reject) => {
-          db.run(
-            `UPDATE payments SET status = 'completed', payment_id = ? WHERE id = ?`,
-            [paymentId, paymentRecordId],
-            function(err) {
-              if (err) {
-                console.error("Failed to update payment status:", err);
-                reject(err);
-              } else {
-                console.log(`✅ Payment ${paymentRecordId} marked as completed`);
-                resolve();
-              }
-            }
-          );
-        });
+        await dbPromise.run(
+          `UPDATE payments SET status = ?, payment_id = ? WHERE id = ?`,
+          [PAYMENT_STATUS.COMPLETED, paymentId, paymentRecordId]
+        );
+        console.log(`✅ Payment ${paymentRecordId} marked as completed`);
       }
       
       // Update simulated XRP balance (add XLUSD amount as XRP for testing)
       // In real scenario, buying XLUSD doesn't give XRP, but for testing we'll simulate this
       if (userWalletData) {
-        await new Promise((resolve, reject) => {
-          db.run(
+        try {
+          await dbPromise.run(
             `UPDATE user_wallets 
              SET simulated_balance_xrp = COALESCE(simulated_balance_xrp, 0) + ?,
                  updated_at = CURRENT_TIMESTAMP
              WHERE user_id = ?`,
-            [Number(amountXlusd), userId],
-            function(err) {
-              if (err) {
-                console.error("Failed to update simulated XRP balance:", err);
-                // Don't reject - this is optional
-              } else {
-                console.log(`✅ Updated simulated XRP balance: +${amountXlusd} XRP`);
-              }
-              resolve(); // Always resolve - this is optional
-            }
+            [Number(amountXlusd), userId]
           );
-        });
+          console.log(`✅ Updated simulated XRP balance: +${amountXlusd} XRP`);
+        } catch (err) {
+          console.error("Failed to update simulated XRP balance:", err);
+          // Continue - this is optional
+        }
       } else {
         // If no wallet, create a simulated balance entry
         // We can't update user_wallets without a wallet, so we'll skip this
@@ -1721,8 +2134,7 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     // Real XRPL transaction mode
     client = await getClient();
     
-    const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
-    const xlusdCurrency = "XLUSD";
+    const xlusdIssuer = process.env.XLUSD_ISSUER || DEFAULT_XLUSD_ISSUER;
     
     // Get issuer wallet - issuer must be configured
     if (!process.env.XLUSD_ISSUER_SEED && !process.env.PAYER_SEED) {
@@ -1765,7 +2177,7 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
         TransactionType: "TrustSet",
         Account: recipientAddress,
         LimitAmount: {
-          currency: xlusdCurrency,
+          currency: XLUSD_CURRENCY,
           issuer: xlusdIssuer,
           value: "1000000", // Set a high limit
         },
@@ -1840,9 +2252,9 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
 
     // Update payment record with success
     if (paymentRecordId) {
-      db.run(
-        `UPDATE payments SET status = 'completed', payment_id = ?, tx_hash = ? WHERE id = ?`,
-        [paymentId, result.result?.hash, paymentRecordId]
+      await dbPromise.run(
+        `UPDATE payments SET status = ?, payment_id = ?, tx_hash = ? WHERE id = ?`,
+        [PAYMENT_STATUS.COMPLETED, paymentId, result.result?.hash, paymentRecordId]
       );
     }
 
@@ -1856,138 +2268,93 @@ app.post("/api/xlusd/purchase", requireAuth, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
-  } finally {
-    if (client) await client.disconnect();
   }
+  // Note: Client connection is reused via connection pool, no need to disconnect
 });
 
 // WITHDRAW XLUSD (Convert XLUSD back to fiat)
 app.post("/api/xlusd/withdraw", requireAuth, async (req, res) => {
-  let client;
   try {
     const { amountXlusd, withdrawalMethod, accountDetails } = req.body || {};
     const userId = req.session.user?.id;
 
-    if (!amountXlusd || !Number.isFinite(Number(amountXlusd)) || Number(amountXlusd) <= 0) {
+    if (!isValidAmount(amountXlusd)) {
       return res.status(400).json({ error: "Invalid amountXlusd" });
     }
 
-    if (!withdrawalMethod || !["bank", "paynow"].includes(withdrawalMethod)) {
+    if (!isValidWithdrawalMethod(withdrawalMethod)) {
       return res.status(400).json({ error: "Invalid withdrawal method" });
     }
 
-    if (!process.env.PAYER_SEED) {
-      return res.status(500).json({ error: "Missing PAYER_SEED" });
-    }
+    // Fake bank mode: withdrawals are off-ledger and use simulated XLUSD balance from DB.
+    const amtXlusd = Number(amountXlusd);
+    const [purchaseRow, withdrawalRow] = await Promise.all([
+      dbPromise.get(
+        `SELECT COALESCE(SUM(amount_xlusd), 0) as total_purchases 
+         FROM payments 
+         WHERE user_id = ? AND status = ?`,
+        [userId, PAYMENT_STATUS.COMPLETED]
+      ),
+      dbPromise.get(
+        `SELECT COALESCE(SUM(amount_xlusd), 0) as total_withdrawals 
+         FROM withdrawals 
+         WHERE user_id = ? AND status IN (?, ?)`,
+        [userId, WITHDRAWAL_STATUS.COMPLETED, WITHDRAWAL_STATUS.PROCESSING]
+      ),
+    ]);
 
-    const userWallet = xrpl.Wallet.fromSeed(process.env.PAYER_SEED);
-    const userAddress = userWallet.classicAddress;
-    client = await getClient();
-
-    // Check user's XLUSD balance
-    const accountLines = await client.request({
-      command: "account_lines",
-      account: userAddress,
-      ledger_index: "validated",
-    });
-
-    const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
-    const xlusdCurrency = "XLUSD";
-
-    const xlusdLine = accountLines.result.lines?.find(
-      (line) => line.currency === xlusdCurrency && line.account === xlusdIssuer
+    const currentBalance = Math.max(
+      0,
+      Number(purchaseRow?.total_purchases || 0) - Number(withdrawalRow?.total_withdrawals || 0)
     );
 
-    const currentBalance = xlusdLine ? parseFloat(xlusdLine.balance) : 0;
-
-    if (currentBalance < Number(amountXlusd)) {
-      return res.status(400).json({ 
-        error: `Insufficient balance. You have ${currentBalance.toFixed(2)} XLUSD` 
+    if (currentBalance < amtXlusd) {
+      return res.status(400).json({
+        error: `Insufficient balance. You have ${currentBalance.toFixed(2)} XLUSD`,
       });
     }
 
-    const amountUsd = Number(amountXlusd) * 1.0; // $1 per XLUSD
+    const amountUsd = Number(amountXlusd) * XLUSD_PRICE_USD;
 
     // Record withdrawal in database
-    db.run(
+    const insert = await dbPromise.run(
       `INSERT INTO withdrawals (user_id, amount_xlusd, amount_usd, withdrawal_method, account_details, status) 
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [userId, amountXlusd, amountUsd, withdrawalMethod, JSON.stringify(accountDetails || {}), "pending"],
-      function (err) {
-        if (err) {
-          console.error("Failed to record withdrawal:", err);
-        }
-      }
+      [userId, amtXlusd, amountUsd, withdrawalMethod, JSON.stringify(accountDetails || {}), WITHDRAWAL_STATUS.COMPLETED]
     );
 
-    // Transfer XLUSD back to issuer (burn/return)
-    const issuerWallet = xrpl.Wallet.fromSeed(process.env.XLUSD_ISSUER_SEED || process.env.PAYER_SEED);
-    
-    const paymentTx = {
-      TransactionType: "Payment",
-      Account: userAddress,
-      Destination: issuerWallet.classicAddress,
-      Amount: {
-        currency: xlusdCurrency,
-        issuer: xlusdIssuer,
-        value: String(amountXlusd),
-      },
-    };
-
-    const prepared = await client.autofill(paymentTx);
-    const signed = userWallet.sign(prepared);
-    const result = await client.submitAndWait(signed.tx_blob);
-
-    const txResult = result.result?.meta?.TransactionResult;
-
-    if (txResult !== "tesSUCCESS") {
-      // Update withdrawal status to failed
-      db.run(
-        `UPDATE withdrawals SET status = 'failed' WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1`,
-        [userId]
-      );
-
-      return res.status(400).json({
-        ok: false,
-        error: "Failed to process withdrawal",
-        txResult,
-        engine_result: result.result?.engine_result,
-        engine_result_message: result.result?.engine_result_message,
-        txHash: result.result?.hash,
-      });
-    }
-
-    // Process fiat withdrawal
-    // In production, this would trigger actual bank transfer or PayNow payout
     const withdrawalId = `wd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Update withdrawal record
-    db.run(
-      `UPDATE withdrawals SET status = 'processing', tx_hash = ? 
-       WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1`,
-      [result.result?.hash, userId]
-    );
 
-    // TODO: Integrate with payment gateway for actual fiat payout
-    // For bank transfer: Use Stripe Connect, Plaid, or bank API
-    // For PayNow: Use PayNow API to send money
+    // Fake bank: payout USD to user
+    await recordBankTransaction({
+      userId,
+      direction: "out",
+      amountUsd,
+      reference: withdrawalId,
+      metadata: {
+        type: "xlusd_withdrawal",
+        withdrawalMethod,
+        withdrawalRowId: insert.lastID,
+        accountDetails: accountDetails || {},
+        amountXlusd: amtXlusd,
+      },
+    });
 
     return res.json({
       ok: true,
-      txHash: result.result?.hash,
-      txResult,
-      amountXlusd: Number(amountXlusd),
+      txHash: null,
+      txResult: "tesSUCCESS",
+      amountXlusd: amtXlusd,
       amountUsd,
       withdrawalId,
       withdrawalMethod,
-      status: "processing",
-      message: "Withdrawal initiated. Funds will be transferred within 1-3 business days.",
+      status: WITHDRAWAL_STATUS.COMPLETED,
+      message: "Withdrawal completed (fake bank). USD payout recorded.",
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
-  } finally {
-    if (client) await client.disconnect();
   }
+  // Note: No XRPL interaction needed for fake bank withdrawals
 });
 
 // GET WITHDRAWAL HISTORY
@@ -2128,9 +2495,8 @@ app.post("/api/xlusd/buy", requireAuth, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
-  } finally {
-    if (client) await client.disconnect();
   }
+  // Note: Client connection is reused via connection pool, no need to disconnect
 });
 
 /* ======================
@@ -2143,10 +2509,9 @@ app.get("/api/history", requireAuth, async (req, res) => {
     const userId = req.session.user?.id;
     const limit = parseInt(req.query.limit) || 50;
     
-    // Get payments and withdrawals from database
-    const history = await new Promise((resolve, reject) => {
-      // Get payments
-      db.all(
+    // Get payments and withdrawals from database in parallel
+    const [paymentRows, withdrawalRows] = await Promise.all([
+      dbPromise.all(
         `SELECT 
           id, 
           amount_xlusd, 
@@ -2161,74 +2526,59 @@ app.get("/api/history", requireAuth, async (req, res) => {
          WHERE user_id = ? 
          ORDER BY created_at DESC 
          LIMIT ?`,
-        [userId, limit],
-        (err, paymentRows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          
-          // Get withdrawals
-          db.all(
-            `SELECT 
-              id, 
-              amount_xlusd, 
-              amount_usd, 
-              withdrawal_method as method,
-              status,
-              tx_hash,
-              created_at,
-              'withdrawal' as type
-             FROM withdrawals 
-             WHERE user_id = ? 
-             ORDER BY created_at DESC 
-             LIMIT ?`,
-            [userId, limit],
-            (err2, withdrawalRows) => {
-              if (err2) {
-                reject(err2);
-                return;
-              }
-              
-              // Combine and sort by date
-              const all = [
-                ...paymentRows.map(row => ({
-                  id: row.id,
-                  type: 'purchase',
-                  amount: row.amount_xlusd,
-                  amountUsd: row.amount_usd,
-                  method: row.method,
-                  status: row.status || 'pending',
-                  txHash: row.tx_hash,
-                  paymentId: row.payment_id,
-                  timestamp: new Date(row.created_at).getTime() / 1000,
-                  date: row.created_at,
-                })),
-                ...withdrawalRows.map(row => ({
-                  id: row.id,
-                  type: 'withdrawal',
-                  amount: row.amount_xlusd,
-                  amountUsd: row.amount_usd,
-                  method: row.method,
-                  status: row.status || 'pending',
-                  txHash: row.tx_hash,
-                  timestamp: new Date(row.created_at).getTime() / 1000,
-                  date: row.created_at,
-                }))
-              ];
-              
-              // Sort by timestamp descending
-              all.sort((a, b) => b.timestamp - a.timestamp);
-              
-              console.log(`History for user ${userId}: ${paymentRows.length} payments, ${withdrawalRows.length} withdrawals`);
-              console.log(`Payment statuses:`, paymentRows.map(r => ({ id: r.id, status: r.status, amount: r.amount_xlusd })));
-              
-              resolve(all.slice(0, limit));
-            }
-          );
-        }
-      );
-    });
+        [userId, limit]
+      ),
+      dbPromise.all(
+        `SELECT 
+          id, 
+          amount_xlusd, 
+          amount_usd, 
+          withdrawal_method as method,
+          status,
+          tx_hash,
+          created_at,
+          'withdrawal' as type
+         FROM withdrawals 
+         WHERE user_id = ? 
+         ORDER BY created_at DESC 
+         LIMIT ?`,
+        [userId, limit]
+      ),
+    ]);
+    
+    // Combine and sort by date
+    const all = [
+      ...paymentRows.map(row => ({
+        id: row.id,
+        type: 'purchase',
+        amount: row.amount_xlusd,
+        amountUsd: row.amount_usd,
+        method: row.method,
+        status: row.status || PAYMENT_STATUS.PENDING,
+        txHash: row.tx_hash,
+        paymentId: row.payment_id,
+        timestamp: new Date(row.created_at).getTime() / 1000,
+        date: row.created_at,
+      })),
+      ...withdrawalRows.map(row => ({
+        id: row.id,
+        type: 'withdrawal',
+        amount: row.amount_xlusd,
+        amountUsd: row.amount_usd,
+        method: row.method,
+        status: row.status || WITHDRAWAL_STATUS.PENDING,
+        txHash: row.tx_hash,
+        timestamp: new Date(row.created_at).getTime() / 1000,
+        date: row.created_at,
+      }))
+    ];
+    
+    // Sort by timestamp descending
+    all.sort((a, b) => b.timestamp - a.timestamp);
+    
+    console.log(`History for user ${userId}: ${paymentRows.length} payments, ${withdrawalRows.length} withdrawals`);
+    
+    const history = all.slice(0, limit);
 
     return res.json({
       ok: true,
@@ -2256,6 +2606,17 @@ app.get("/api/stats", requireAuth, async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Fake bank USD balance (for deposits/payouts)
+app.get("/api/bank/balance", requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.user?.id;
+    const balanceUsd = await getBankBalanceUsd(userId);
+    return res.json({ ok: true, balanceUsd });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
   }
 });
 
@@ -2381,17 +2742,25 @@ app.get("/api/test/wallet", async (req, res) => {
     }
   } catch (err) {
     return res.status(500).json({ error: err.message || String(err) });
-  } finally {
-    if (client) await client.disconnect();
   }
+  // Note: Client connection is reused via connection pool, no need to disconnect
 });
 
 /* ======================
    START
 ====================== */
 
-const PORT = 3001;
-app.listen(PORT, () => {
+const PORT = Number(process.env.PORT || 3001);
+const server = app.listen(PORT, () => {
   console.log(`🚀 Backend running at http://localhost:${PORT}`);
   console.log(`📊 Test wallet: http://localhost:${PORT}/api/test/wallet`);
+});
+
+server.on("error", (err) => {
+  if (err?.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use.`);
+    console.error(`   Tip: stop the existing process, or run with PORT=${PORT + 1} npm start`);
+    process.exit(1);
+  }
+  throw err;
 });

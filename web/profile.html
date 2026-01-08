@@ -19,6 +19,10 @@
           <span class="menu-icon">📊</span>
           <span>Dashboard</span>
         </a>
+        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
         <a href="history.html" class="menu-item" data-page="history">
           <span class="menu-icon">📜</span>
           <span>History</span>
@@ -26,14 +30,6 @@
         <a href="settings.html" class="menu-item" data-page="settings">
           <span class="menu-icon">⚙️</span>
           <span>Settings</span>
-        </a>
-        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
-          <span class="menu-icon">💰</span>
-          <span>Buy XLUSD</span>
-        </a>
-        <a href="profile.html" class="menu-item active" data-page="profile">
-          <span class="menu-icon">👤</span>
-          <span>Profile</span>
         </a>
       </div>
 
@@ -95,7 +91,7 @@
               <span class="detail-label">Email</span>
               <span class="detail-value" id="detailEmail">-</span>
             </div>
-            <div class="detail-item">
+            <div class="detail-item address-item">
               <span class="detail-label">XRPL Wallet</span>
               <span class="detail-value" id="detailAddress">-</span>
             </div>
@@ -103,10 +99,7 @@
               <span class="detail-label">Wallet Status</span>
               <span class="detail-value" id="walletStatus" style="font-weight: 600;">Not Connected</span>
             </div>
-            <div class="detail-item" id="walletBalanceItem" style="display: none;">
-              <span class="detail-label">XRP Balance</span>
-              <span class="detail-value" id="walletBalance" style="font-weight: 600; color: #10b981;">-</span>
-            </div>
+            <!-- XRP balance removed from UI (XLUSD-only experience) -->
             
             <!-- Verify Button (shown when wallet connected but not verified) -->
             <div class="detail-item" id="walletVerifySection" style="display: none; padding-top: 16px; border-top: 1px solid rgba(0,0,0,0.05);">

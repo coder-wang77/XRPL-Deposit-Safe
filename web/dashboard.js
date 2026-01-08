@@ -1,6 +1,29 @@
 // web/dashboard.js
 
-const API = "http://127.0.0.1:3001";
+function getApiBase() {
+  const params = new URLSearchParams(window.location.search);
+  const port =
+    params.get("apiPort") ||
+    localStorage.getItem("API_PORT") ||
+    "3001";
+  const host =
+    params.get("apiHost") ||
+    localStorage.getItem("API_HOST") ||
+    window.location.hostname ||
+    "127.0.0.1";
+  const proto =
+    params.get("apiProto") ||
+    localStorage.getItem("API_PROTO") ||
+    (window.location.protocol === "https:" ? "https:" : "http:");
+  return `${proto}//${host}:${port}`;
+}
+
+const API = getApiBase();
+
+// Clicking the bottom-left profile area should open the Profile tab
+document.querySelector(".sidebar-footer .user-info")?.addEventListener("click", () => {
+  window.location.href = `profile.html${window.location.search || ""}`;
+});
 
 const whoEl = document.getElementById("who");
 whoEl.textContent = "Loading...";
@@ -118,9 +141,6 @@ async function loadStatistics() {
 
     if (res.ok) {
       const data = await res.json();
-      document.getElementById("totalEscrows").textContent = Math.round(data.totalEscrows || 0);
-      const totalValue = parseFloat(data.totalValue || 0);
-      document.getElementById("totalValue").textContent = `${totalValue.toFixed(2)} XRP`;
       document.getElementById("completedCount").textContent = Math.round(data.completed || 0);
       document.getElementById("pendingCount").textContent = Math.round(data.pending || 0);
     }
@@ -129,42 +149,7 @@ async function loadStatistics() {
   }
 }
 
-// Load XRP wallet balance (same as profile page)
-async function loadXRPWalletBalance() {
-  try {
-    const res = await fetch(`${API}/api/wallet/status`, {
-      credentials: "include",
-    });
-
-    const balanceEl = document.getElementById("xrpWalletBalance");
-    if (!balanceEl) return;
-
-    if (res.ok) {
-      const data = await res.json();
-      
-      if (data.wallet && data.connected && data.wallet.balanceXrp !== undefined) {
-        balanceEl.textContent = `${data.wallet.balanceXrp.toFixed(2)} XRP`;
-        balanceEl.style.color = "#10b981";
-      } else if (data.wallet && data.connected && data.wallet.existsOnLedger === false) {
-        balanceEl.textContent = "Not Activated";
-        balanceEl.style.color = "#f59e0b";
-      } else {
-        balanceEl.textContent = "Not Connected";
-        balanceEl.style.color = "#718096";
-      }
-    } else {
-      balanceEl.textContent = "Error";
-      balanceEl.style.color = "#ef4444";
-    }
-  } catch (err) {
-    console.error("Failed to load XRP wallet balance:", err);
-    const balanceEl = document.getElementById("xrpWalletBalance");
-    if (balanceEl) {
-      balanceEl.textContent = "Error";
-      balanceEl.style.color = "#ef4444";
-    }
-  }
-}
+// XRP wallet balance removed from UI (XLUSD-only experience)
 
 // Load recent activity
 async function loadRecentActivity() {
@@ -261,9 +246,7 @@ function formatDate(timestamp) {
 loadUser();
 loadStatistics();
 loadRecentActivity();
-loadXRPWalletBalance();
 setInterval(loadStatistics, 30000); // Refresh every 30 seconds
-setInterval(loadXRPWalletBalance, 30000); // Refresh XRP wallet balance every 30 seconds
 
 /* ======================
    XLUSD BALANCE & BUY
@@ -280,17 +263,25 @@ async function loadXLUSDBalance() {
 
     if (!res.ok) {
       balanceEl.textContent = "Error";
+      const walletEl = document.getElementById("xlusdWalletBalance");
+      if (walletEl) walletEl.textContent = "Error";
       return;
     }
 
     const data = await res.json();
     if (data.ok) {
       balanceEl.textContent = `${data.balance.toFixed(2)} ${data.currency}`;
+      const walletEl = document.getElementById("xlusdWalletBalance");
+      if (walletEl) walletEl.textContent = `${data.balance.toFixed(2)} ${data.currency}`;
     } else {
       balanceEl.textContent = "0.00 XLUSD";
+      const walletEl = document.getElementById("xlusdWalletBalance");
+      if (walletEl) walletEl.textContent = "0.00 XLUSD";
     }
   } catch (e) {
     balanceEl.textContent = "Error";
+    const walletEl = document.getElementById("xlusdWalletBalance");
+    if (walletEl) walletEl.textContent = "Error";
     console.error("Failed to load XLUSD balance:", e);
   }
 }
@@ -331,12 +322,10 @@ const resQACreate = document.getElementById("resQACreate");
 const qaApprovalSection = document.getElementById("qa_approvalSection");
 const qaPreimageInput = document.getElementById("qa_preimage");
 
-const btnQALoadRequirements = document.getElementById("btnQALoadRequirements");
-const btnQAApprove = document.getElementById("btnQAApprove");
+// Client refund is time-based only (no AI status UI)
 const btnQARefund = document.getElementById("btnQARefund");
 const qaApproveOwnerInput = document.getElementById("qa_approve_owner");
 const qaApproveSeqInput = document.getElementById("qa_approve_seq");
-const qaVerifyChecklist = document.getElementById("qa_verify_checklist");
 const resQAApprove = document.getElementById("resQAApprove");
 
 // Service Provider Claim
@@ -345,55 +334,161 @@ const qaClaimOwnerInput = document.getElementById("qa_claim_owner");
 const qaClaimSeqInput = document.getElementById("qa_claim_seq");
 const qaClaimPreimageInput = document.getElementById("qa_claim_preimage");
 const resQAClaim = document.getElementById("resQAClaim");
+const qaProofText = document.getElementById("qa_proof_text");
+const qaProofLinksWrap = document.getElementById("qa_proof_links");
+const btnQAAddProofLink = document.getElementById("btnQAAddProofLink");
 
 // Store QA escrow data (sequence -> requirements)
 const qaEscrowData = {};
 
-// Set minimum datetime for deadline (5 minutes from now) - Freelancer escrow
-const minDeadline = new Date(Date.now() + 5 * 60 * 1000);
-fDeadlineInput.min = minDeadline.toISOString().slice(0, 16);
+// NOTE: Dashboard HTML no longer includes the freelancer escrow section, but some older
+// dashboard code still referenced it. Guard these so the page (and XLUSD) still loads.
+const freelancerInput = document.getElementById("freelancer");
+const fDeadlineInput = document.getElementById("f_deadline");
 
-// Set default deadline to 1 hour from now - Freelancer escrow
-const defaultDeadline = new Date(Date.now() + 60 * 60 * 1000);
-fDeadlineInput.value = defaultDeadline.toISOString().slice(0, 16);
+if (fDeadlineInput) {
+  // Set minimum datetime for deadline (5 minutes from now) - Freelancer escrow
+  const minDeadline = new Date(Date.now() + 5 * 60 * 1000);
+  fDeadlineInput.min = minDeadline.toISOString().slice(0, 16);
+
+  // Set default deadline to 1 hour from now - Freelancer escrow
+  const defaultDeadline = new Date(Date.now() + 60 * 60 * 1000);
+  fDeadlineInput.value = defaultDeadline.toISOString().slice(0, 16);
+}
 
 // Set minimum datetime for deadline - QA escrow
 qaDeadlineInput.min = new Date().toISOString().slice(0, 16);
 
 // Address validation - Freelancer escrow
-freelancerInput.addEventListener("blur", () => {
-  const address = freelancerInput.value.trim();
-  if (address && !isValidXRPLAddress(address)) {
-    freelancerInput.style.borderColor = "#ef4444";
-  } else {
-    freelancerInput.style.borderColor = "";
-  }
-});
+if (freelancerInput) {
+  freelancerInput.addEventListener("blur", () => {
+    const address = freelancerInput.value.trim();
+    if (address && !isValidXRPLAddress(address)) {
+      freelancerInput.style.borderColor = "#ef4444";
+    } else {
+      freelancerInput.style.borderColor = "";
+    }
+  });
+}
 
 // Add requirement input - QA escrow
-let requirementCount = 1;
-btnAddRequirement.addEventListener("click", () => {
-  requirementCount++;
+let requirementCount = 0;
+
+function createEvidenceLinkRow(value = "") {
+  const row = document.createElement("div");
+  row.className = "qa-evidence-row";
+  row.style.display = "flex";
+  row.style.gap = "8px";
+  row.style.alignItems = "center";
+  row.style.marginTop = "6px";
+
+  row.innerHTML = `
+    <input type="url"
+           class="qa-evidence-link"
+           placeholder="Evidence link (photo/PDF URL) – optional"
+           value="${value.replace(/"/g, "&quot;")}"
+           style="flex: 1; padding: 8px; border: none; border-radius: 6px; background: rgba(255,255,255,0.9); color: #1a202c; font-size: 12px;" />
+    <button type="button"
+            class="qa-remove-evidence"
+            style="padding: 8px 10px; background: rgba(239,68,68,0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px;">
+      ✕
+    </button>
+  `;
+
+  row.querySelector(".qa-remove-evidence")?.addEventListener("click", () => row.remove());
+  return row;
+}
+
+function createRequirementItem() {
+  requirementCount += 1;
+
   const item = document.createElement("div");
   item.className = "qa-checklist-item";
-  item.style.marginBottom = "8px";
+  item.style.marginBottom = "12px";
+  item.style.padding = "12px";
+  item.style.borderRadius = "10px";
+  item.style.background = "rgba(255,255,255,0.12)";
+  item.style.border = "1px solid rgba(255,255,255,0.18)";
+
   item.innerHTML = `
-    <div style="display: flex; gap: 8px; align-items: center;">
-      <input type="text" placeholder="Requirement ${requirementCount}" 
-             class="qa-requirement-input" 
-             style="flex: 1; padding: 8px; border: none; border-radius: 4px; background: rgba(255,255,255,0.9); color: #1a202c;" />
-      <button type="button" class="qa-remove-requirement" 
-              style="padding: 8px 12px; background: rgba(239,68,68,0.8); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-        ✕
+    <div style="display:flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px;">
+      <div style="font-weight: 700; color: rgba(255,255,255,0.95); font-size: 12px;">
+        Requirement ${requirementCount}
+      </div>
+      <button type="button"
+              class="qa-remove-requirement"
+              style="padding: 6px 10px; background: rgba(239,68,68,0.85); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 12px;">
+        Remove
       </button>
     </div>
+
+    <textarea class="qa-requirement-text"
+              placeholder="Describe what must be delivered (acceptance criteria, scope, etc.)"
+              rows="3"
+              style="width: 100%; padding: 10px; border: none; border-radius: 8px; background: rgba(255,255,255,0.95); color: #1a202c; font-size: 13px; resize: vertical; line-height: 1.4;"></textarea>
+
+    <div class="qa-evidence" style="margin-top: 10px;">
+      <div style="display:flex; justify-content: space-between; align-items:center; gap: 12px;">
+        <div style="font-size: 11px; color: rgba(255,255,255,0.85); font-weight: 600;">
+          Example photos / PDF (links)
+        </div>
+        <button type="button"
+                class="qa-add-evidence"
+                style="padding: 6px 10px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; cursor: pointer; font-size: 12px;">
+          + Add link
+        </button>
+      </div>
+      <div class="qa-evidence-list"></div>
+      <div style="margin-top: 6px; font-size: 10px; color: rgba(255,255,255,0.7);">
+        Tip: paste a link to a photo (e.g. hosted image) or PDF (e.g. Drive/Dropbox link).
+      </div>
+    </div>
   `;
-  qaChecklist.appendChild(item);
-  
-  // Add remove functionality
-  item.querySelector(".qa-remove-requirement").addEventListener("click", () => {
-    item.remove();
+
+  item.querySelector(".qa-remove-requirement")?.addEventListener("click", () => item.remove());
+
+  const evidenceList = item.querySelector(".qa-evidence-list");
+  const addEvidenceBtn = item.querySelector(".qa-add-evidence");
+  addEvidenceBtn?.addEventListener("click", () => {
+    evidenceList?.appendChild(createEvidenceLinkRow());
   });
+
+  // Start with one evidence link row (optional)
+  evidenceList?.appendChild(createEvidenceLinkRow());
+
+  return item;
+}
+
+function ensureChecklistInitialized() {
+  if (!qaChecklist) return;
+  if (qaChecklist.querySelector(".qa-checklist-item")) return;
+  qaChecklist.innerHTML = "";
+  requirementCount = 0;
+  qaChecklist.appendChild(createRequirementItem());
+}
+
+function collectRequirementsFromUI() {
+  const items = Array.from(qaChecklist?.querySelectorAll(".qa-checklist-item") || []);
+
+  const requirements = items
+    .map((item) => {
+      const text = item.querySelector(".qa-requirement-text")?.value?.trim() || "";
+      const evidenceLinks = Array.from(item.querySelectorAll(".qa-evidence-link"))
+        .map((i) => i.value?.trim())
+        .filter((v) => v && v.length > 0);
+
+      return { text, evidenceLinks };
+    })
+    .filter((r) => r.text.length > 0 || (r.evidenceLinks && r.evidenceLinks.length > 0));
+
+  return requirements;
+}
+
+ensureChecklistInitialized();
+
+btnAddRequirement?.addEventListener("click", () => {
+  ensureChecklistInitialized();
+  qaChecklist?.appendChild(createRequirementItem());
 });
 
 // Address validation
@@ -409,14 +504,11 @@ qaProviderInput.addEventListener("blur", () => {
 // Create QA Escrow
 btnQACreate.addEventListener("click", async () => {
   const providerAddress = qaProviderInput.value.trim();
-  const amountXrp = qaAmountInput.value.trim();
+  const amountXlusd = qaAmountInput.value.trim();
   const deadlineLocal = qaDeadlineInput.value;
   
   // Get requirements
-  const requirementInputs = qaChecklist.querySelectorAll(".qa-requirement-input");
-  const requirements = Array.from(requirementInputs)
-    .map(input => input.value.trim())
-    .filter(req => req.length > 0);
+  const requirements = collectRequirementsFromUI();
   
   resQACreate.style.display = "none";
   
@@ -433,15 +525,15 @@ btnQACreate.addEventListener("click", async () => {
     return;
   }
   
-  if (!amountXrp) {
+  if (!amountXlusd) {
     show(resQACreate, false, "❌ Please enter payment amount");
     qaAmountInput.focus();
     return;
   }
   
-  const amount = parseFloat(amountXrp);
-  if (!Number.isFinite(amount) || amount < 0.000001) {
-    show(resQACreate, false, "❌ Amount must be at least 0.000001 XRP");
+  const amount = parseFloat(amountXlusd);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    show(resQACreate, false, "❌ Amount must be greater than 0 XLUSD");
     qaAmountInput.focus();
     return;
   }
@@ -457,15 +549,15 @@ btnQACreate.addEventListener("click", async () => {
   const minDeadlineUnix = nowUnix + 300; // Require at least 5 minutes in the future
   
   if (!deadlineUnix) {
-    show(resFreelancerCreate, false, "❌ Invalid deadline format");
-    fDeadlineInput.focus();
+    show(resQACreate, false, "❌ Invalid deadline format");
+    qaDeadlineInput.focus();
     return;
   }
   
   if (deadlineUnix <= minDeadlineUnix) {
     const minDate = new Date(minDeadlineUnix * 1000).toLocaleString();
-    show(resFreelancerCreate, false, `❌ Deadline must be at least 5 minutes in the future.\nMinimum: ${minDate}`);
-    fDeadlineInput.focus();
+    show(resQACreate, false, `❌ Deadline must be at least 5 minutes in the future.\nMinimum: ${minDate}`);
+    qaDeadlineInput.focus();
     return;
   }
   
@@ -480,7 +572,7 @@ btnQACreate.addEventListener("click", async () => {
       credentials: "include",
       body: JSON.stringify({
         providerAddress,
-        amountXrp: amount,
+        amountXlusd: amount,
         deadlineUnix,
         requirements, // Send requirements to store
       }),
@@ -504,7 +596,7 @@ btnQACreate.addEventListener("click", async () => {
     const txHash = data.txHash || "N/A";
     const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
     const successMsg = `✅ QA Escrow Created!\n\n` +
-      `Amount: ${amount} XRP\n` +
+      `Amount: ${amount} XLUSD\n` +
       `Provider: ${formatAddress(providerAddress)}\n` +
       `Sequence: ${data.offerSequence}\n` +
       `Deadline: ${formatDateTime(deadlineUnix)}\n` +
@@ -518,19 +610,15 @@ btnQACreate.addEventListener("click", async () => {
       qaProviderInput.value = "";
       qaAmountInput.value = "";
       qaDeadlineInput.value = "";
-      qaChecklist.innerHTML = `
-        <div class="qa-checklist-item" style="margin-bottom: 8px;">
-          <input type="text" placeholder="Requirement 1" 
-                 class="qa-requirement-input" 
-                 style="width: 100%; padding: 8px; border: none; border-radius: 4px; background: rgba(255,255,255,0.9); color: #1a202c;" />
-        </div>
-      `;
-      requirementCount = 1;
+      if (qaChecklist) {
+        qaChecklist.innerHTML = "";
+      }
+      requirementCount = 0;
+      ensureChecklistInitialized();
       resQACreate.style.display = "none";
     }, 20000);
     
     loadStatistics();
-    loadXRPWalletBalance();
     
   } catch (err) {
     console.error("Create QA escrow error:", err);
@@ -540,227 +628,16 @@ btnQACreate.addEventListener("click", async () => {
   }
 });
 
-// Load requirements for verification
-btnQALoadRequirements.addEventListener("click", async () => {
-  const seq = qaApproveSeqInput.value.trim();
-  
-  if (!seq) {
-    alert("Please enter escrow sequence number");
-    return;
-  }
-  
-  // Check if we have it stored locally
-  if (qaEscrowData[seq]) {
-    const data = qaEscrowData[seq];
-    displayRequirementsForVerification(data.requirements);
-    return;
-  }
-  
-  // Try to fetch from server
-  try {
-    const res = await fetch(`${API}/escrow/qa/requirements/${seq}`, {
-      credentials: "include",
-    });
-    
-    if (res.ok) {
-      const data = await res.json();
-      if (data.requirements !== undefined) {
-        qaEscrowData[seq] = data;
-        displayRequirementsForVerification(
-          data.requirements || [], 
-          data.verifiedRequirements || {},
-          data.aiVerificationStatus || "pending",
-          data.aiSummary || null
-        );
-      } else {
-        qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Requirements not found for this escrow.</p>`;
-      }
-    } else {
-      qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Could not load requirements. They may not be stored.</p>`;
-    }
-  } catch (err) {
-    qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7);">Error loading requirements.</p>`;
-  }
-});
-
-function displayRequirementsForVerification(requirements, verifiedRequirements = {}, aiStatus = "pending", aiSummary = null) {
-  if (!requirements || requirements.length === 0) {
-    qaVerifyChecklist.innerHTML = `<p style="color: rgba(255,255,255,0.7); font-size: 12px;">No requirements for this escrow.</p>`;
-    return;
-  }
-  
-  let statusBadge = "";
-  if (aiStatus === "in_progress") {
-    statusBadge = `<div style="padding: 8px; background: rgba(59,130,246,0.3); border-radius: 4px; margin-bottom: 12px; text-align: center;">
-      <span style="color: #3b82f6;">🤖 AI Verification in Progress...</span>
-    </div>`;
-  } else if (aiStatus === "completed") {
-    const allVerified = Object.values(verifiedRequirements).every(v => v.verified === true);
-    statusBadge = `<div style="padding: 8px; background: ${allVerified ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}; border-radius: 4px; margin-bottom: 12px;">
-      <div style="color: ${allVerified ? '#10b981' : '#f59e0b'}; font-weight: 600; margin-bottom: 4px;">🤖 AI Verification Complete</div>
-      ${aiSummary ? `<div style="font-size: 11px; color: rgba(255,255,255,0.8);">${aiSummary}</div>` : ''}
-    </div>`;
-  } else if (aiStatus === "error") {
-    statusBadge = `<div style="padding: 8px; background: rgba(239,68,68,0.3); border-radius: 4px; margin-bottom: 12px; text-align: center;">
-      <span style="color: #ef4444;">❌ AI Verification Error</span>
-    </div>`;
-  }
-  
-  const requirementsHtml = requirements.map((req, idx) => {
-    const verification = verifiedRequirements[idx];
-    const isVerified = verification?.verified === true;
-    const confidence = verification?.confidence || 0;
-    const reason = verification?.reason || "";
-    
-    return `
-      <div style="margin-bottom: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 4px; ${isVerified ? 'border-left: 3px solid #10b981;' : 'border-left: 3px solid #f59e0b;'}">
-        <div style="display: flex; align-items: start; gap: 8px; margin-bottom: 4px;">
-          <span style="font-size: 18px;">${isVerified ? '✅' : '⏳'}</span>
-          <div style="flex: 1;">
-            <div style="color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 500; margin-bottom: 4px;">${req}</div>
-            ${verification ? `
-              <div style="font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 4px;">
-                ${reason}
-              </div>
-              <div style="font-size: 10px; color: rgba(255,255,255,0.6); margin-top: 2px;">
-                Confidence: ${(confidence * 100).toFixed(1)}%
-              </div>
-            ` : '<div style="font-size: 11px; color: rgba(255,255,255,0.6);">AI verification pending...</div>'}
-          </div>
-        </div>
-      </div>
-    `;
-  }).join("");
-  
-  qaVerifyChecklist.innerHTML = statusBadge + requirementsHtml;
-}
-
-// Approve and release payment
-// Trigger AI Verification
-btnQATriggerAI.addEventListener("click", async () => {
-  const ownerAddress = qaApproveOwnerInput.value.trim();
-  const seqValue = qaApproveSeqInput.value.trim();
-  
-  resQAApprove.style.display = "none";
-  
-  if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
-    show(resQAApprove, false, "❌ Invalid owner address");
-    return;
-  }
-  
-  if (!seqValue) {
-    show(resQAApprove, false, "❌ Invalid sequence number");
-    return;
-  }
-  
-  if (!confirm(`Re-run AI verification?\n\nThis will trigger the AI checker to verify all requirements again.\n\nSequence: ${seqValue}`)) {
-    return;
-  }
-  
-  setButtonLoading(btnQATriggerAI, true, "⏳ Running AI Verification...");
-  
-  try {
-    const res = await fetch(`${API}/escrow/qa/ai-verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        sequence: Number(seqValue),
-      }),
-    });
-    
-    const data = await res.json();
-    
-    if (!res.ok || !data.ok) {
-      show(resQAApprove, false, `❌ AI verification failed\n${data.error || "Unknown error"}`);
-      return;
-    }
-    
-    show(resQAApprove, true, 
-      `🤖 AI Verification Complete!\n\n` +
-      `${data.summary}\n\n` +
-      `Verified: ${data.verifiedCount}/${data.totalCount} requirements\n` +
-      `Average Confidence: ${(data.avgConfidence * 100).toFixed(1)}%\n\n` +
-      `${data.allVerified ? "✅ All requirements verified! Service provider can now claim payment." : "⚠️ Some requirements need attention."}`
-    );
-    
-    // Reload requirements to show updated status
-    setTimeout(() => {
-      btnQALoadRequirements.click();
-    }, 2000);
-
-  } catch (err) {
-    console.error("AI verification error:", err);
-    show(resQAApprove, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
-  } finally {
-    setButtonLoading(btnQATriggerAI, false);
-  }
-});
-
-// Old verify function removed - AI handles verification automatically
-  const ownerAddress = qaApproveOwnerInput.value.trim();
-  const seqValue = qaApproveSeqInput.value.trim();
-  
-  resQAApprove.style.display = "none";
-  
-  if (!ownerAddress || !isValidXRPLAddress(ownerAddress)) {
-    show(resQAApprove, false, "❌ Invalid owner address");
-    return;
-  }
-  
-  if (!seqValue) {
-    show(resQAApprove, false, "❌ Invalid sequence number");
-    return;
-  }
-  
-  if (!confirm(`Re-run AI verification?\n\nThis will trigger the AI checker to verify all requirements again.\n\nSequence: ${seqValue}`)) {
-    return;
-  }
-
-  setButtonLoading(btnQATriggerAI, true, "⏳ Running AI Verification...");
-
-  try {
-    const res = await fetch(`${API}/escrow/qa/ai-verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        sequence: Number(seqValue),
-      }),
-    });
-    
-    const data = await res.json();
-    
-    if (!res.ok || !data.ok) {
-      show(resQAApprove, false, `❌ AI verification failed\n${data.error || "Unknown error"}`);
-      return;
-    }
-    
-    show(resQAApprove, true, 
-      `🤖 AI Verification Complete!\n\n` +
-      `${data.summary}\n\n` +
-      `Verified: ${data.verifiedCount}/${data.totalCount} requirements\n` +
-      `Average Confidence: ${(data.avgConfidence * 100).toFixed(1)}%\n\n` +
-      `${data.allVerified ? "✅ All requirements verified! Service provider can now claim payment." : "⚠️ Some requirements need attention."}`
-    );
-    
-    // Reload requirements to show updated status
-    setTimeout(() => {
-      btnQALoadRequirements.click();
-    }, 2000);
-
-  } catch (err) {
-    console.error("AI verification error:", err);
-    show(resQAApprove, false, `❌ Network error: ${err.message || "Cannot reach backend"}`);
-  } finally {
-    setButtonLoading(btnQATriggerAI, false);
-  }
-});
+// Client refund is time-based only (AI proof verification is provider-side)
 
 // Service Provider: Claim Payment
 btnQAClaim.addEventListener("click", async () => {
-  const ownerAddress = qaClaimOwnerInput.value.trim();
+  const ownerAddress = qaClaimOwnerInput.value.trim(); // kept for display consistency
   const seqValue = qaClaimSeqInput.value.trim();
+  const proofText = qaProofText?.value?.trim() || "";
+  const proofLinks = Array.from(qaProofLinksWrap?.querySelectorAll(".qa-proof-link") || [])
+    .map((i) => i.value.trim())
+    .filter((v) => v.length > 0);
   
   resQAClaim.style.display = "none";
   
@@ -773,45 +650,78 @@ btnQAClaim.addEventListener("click", async () => {
     show(resQAClaim, false, "❌ Invalid sequence number");
     return;
   }
-  
-  if (!confirm(`Claim payment?\n\nThis will finish the escrow and send the payment to your wallet.\n\nYou can only claim BEFORE the deadline passes.`)) {
+
+  if (proofText.length < 10 && proofLinks.length === 0) {
+    show(resQAClaim, false, "❌ Please submit proof: add a description (min 10 chars) and/or at least one evidence link.");
     return;
   }
   
-  setButtonLoading(btnQAClaim, true, "⏳ Claiming Payment...");
+  if (!confirm(`Submit proof & claim payment?\n\nThe platform will:\n1) Run AI verification against the requirements\n2) If verified, unlock the escrow and credit you in XLUSD\n\nContinue?`)) {
+    return;
+  }
+  
+  setButtonLoading(btnQAClaim, true, "⏳ Verifying & Claiming...");
   
   try {
-    // Use the new QA claim endpoint (automatically handles preimage if requirements exist)
-    const res = await fetch(`${API}/escrow/qa/claim`, {
+    // 1) Submit proof -> AI verify -> finish + convert (if verified)
+    const res = await fetch(`${API}/escrow/qa/proof/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({
-        ownerAddress,
-        offerSequence: Number(seqValue),
+        sequence: Number(seqValue),
+        proofText,
+        proofLinks,
       }),
     });
     
     const data = await res.json();
     
     if (!res.ok || !data.ok) {
-      show(resQAClaim, false, `❌ Failed to claim payment\n${data.error || "Unknown error"}\n\nNote: You can only claim before the deadline passes. If escrow has requirements, all must be verified by client first.`);
+      show(resQAClaim, false, `❌ Proof submission failed\n${data.error || "Unknown error"}`);
       return;
     }
-    
-    const txHash = data.txHash || "N/A";
+
+    const allVerified = data.allVerified === true;
+    if (!allVerified) {
+      show(
+        resQAClaim,
+        false,
+        `⚠️ Proof received, but AI did not verify all requirements yet.\n\n${data.ai?.summary || ""}\n\nAdd more detail/links and try again.`
+      );
+      return;
+    }
+
+    if (!data.finish?.ok) {
+      show(resQAClaim, false, `❌ AI verified, but escrow unlock failed.\n${data.finish?.txResult || data.finish?.error || "Unknown error"}`);
+      return;
+    }
+
+    const txHash = data.finish.txHash || "N/A";
     const txUrl = `https://testnet.xrpl.org/transactions/${txHash}`;
-    show(resQAClaim, true, 
-      `✅ Payment Claimed Successfully!\n\n` +
-      `The payment has been released to your wallet.\n\n` +
-      `Transaction: ${txHash}\n${txUrl}`
+    const delivered = data.conversion?.deliveredXlusd;
+    const conversionNote =
+      data.conversion?.ok
+        ? `\n✅ Auto-converted to XLUSD${delivered !== null && delivered !== undefined ? `: ${Number(delivered).toFixed(2)} XLUSD` : ""}`
+        : data.conversion?.skipped
+          ? `\n⚠️ Conversion skipped: ${data.conversion.reason || "Unknown reason"}`
+          : data.conversion?.error
+            ? `\n⚠️ Conversion failed: ${data.conversion.error}`
+            : "";
+
+    show(
+      resQAClaim,
+      true,
+      `✅ Payment unlocked!\n\nTransaction: ${txHash}\n${txUrl}${conversionNote}`
     );
     
     // Clear form
-    qaClaimOwnerInput.value = "";
-    qaClaimSeqInput.value = "";
+    if (qaProofText) qaProofText.value = "";
+    Array.from(qaProofLinksWrap?.querySelectorAll(".qa-proof-link") || []).forEach((i, idx) => {
+      if (idx === 0) i.value = "";
+      else i.remove();
+    });
     loadStatistics();
-    loadXRPWalletBalance();
     
   } catch (err) {
     console.error("Claim payment error:", err);
@@ -819,6 +729,21 @@ btnQAClaim.addEventListener("click", async () => {
   } finally {
     setButtonLoading(btnQAClaim, false);
   }
+});
+
+btnQAAddProofLink?.addEventListener("click", () => {
+  if (!qaProofLinksWrap) return;
+  const input = document.createElement("input");
+  input.className = "qa-proof-link";
+  input.type = "url";
+  input.placeholder = "https://... (optional)";
+  input.style.padding = "10px";
+  input.style.border = "none";
+  input.style.borderRadius = "8px";
+  input.style.background = "rgba(255,255,255,0.95)";
+  input.style.color = "#1a202c";
+  input.style.fontSize = "13px";
+  qaProofLinksWrap.appendChild(input);
 });
 
 // Refund after deadline
@@ -871,7 +796,6 @@ btnQARefund.addEventListener("click", async () => {
     );
     
     loadStatistics();
-    loadXRPWalletBalance();
     
   } catch (err) {
     console.error("Refund QA escrow error:", err);

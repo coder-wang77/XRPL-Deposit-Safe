@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DepositSafe | Buy XLUSD</title>
+    <title>DepositSafe | XLUSD Deposit / Withdraw</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="page">
@@ -19,6 +19,10 @@
           <span class="menu-icon">📊</span>
           <span>Dashboard</span>
         </a>
+        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
         <a href="history.html" class="menu-item" data-page="history">
           <span class="menu-icon">📜</span>
           <span>History</span>
@@ -26,14 +30,6 @@
         <a href="settings.html" class="menu-item" data-page="settings">
           <span class="menu-icon">⚙️</span>
           <span>Settings</span>
-        </a>
-        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
-          <span class="menu-icon">💰</span>
-          <span>Buy XLUSD</span>
-        </a>
-        <a href="profile.html" class="menu-item" data-page="profile">
-          <span class="menu-icon">👤</span>
-          <span>Profile</span>
         </a>
       </div>
 
@@ -58,14 +54,21 @@
     <div class="main-content">
       <div class="topbar">
         <div>
-          <h2>Buy XLUSD</h2>
-          <p class="muted">Purchase XLUSD tokens with credit card or PayNow</p>
+          <h2>XLUSD Deposit / Withdraw</h2>
+          <p class="muted">Deposit USD to mint XLUSD, or withdraw USD by burning XLUSD (fake bank)</p>
         </div>
       </div>
 
       <div class="payment-container">
       <div class="payment-card">
-        <h3>Purchase Amount</h3>
+        <div class="payment-tabs" style="margin-bottom: 28px;">
+          <button class="tab-btn active" data-flow="deposit">💰 Deposit</button>
+          <button class="tab-btn" data-flow="withdraw">💸 Withdraw (Sell XLUSD)</button>
+        </div>
+
+        <!-- DEPOSIT -->
+        <div class="payment-form active" id="deposit-flow">
+        <h3>Deposit Amount</h3>
         <div class="amount-input-group">
           <label for="amount">Amount (XLUSD)</label>
           <input 
@@ -170,6 +173,73 @@
         </button>
 
         <div class="result" id="paymentResult"></div>
+        </div>
+
+        <!-- WITHDRAW -->
+        <div class="payment-form" id="withdraw-flow">
+          <h3>Withdraw Amount</h3>
+          <div class="amount-input-group">
+            <label for="withdrawAmount">Amount (XLUSD)</label>
+            <input 
+              type="number" 
+              id="withdrawAmount" 
+              placeholder="100" 
+              min="1" 
+              step="0.01"
+              required 
+            />
+            <div class="price-info">
+              <span>Rate: $1.00 USD per XLUSD</span>
+            </div>
+          </div>
+
+          <div class="total-section">
+            <div class="total-row">
+              <span>You will receive:</span>
+              <span id="withdrawTotal">$0.00 USD</span>
+            </div>
+          </div>
+
+          <div class="withdrawal-methods">
+            <h3>Withdrawal Method</h3>
+            <div class="payment-tabs">
+              <button class="tab-btn active" data-method="bank">🏦 Bank Transfer</button>
+              <button class="tab-btn" data-method="paynow">📱 PayNow</button>
+            </div>
+
+            <div class="payment-form active" id="bank-form">
+              <label for="bankName">Bank Name</label>
+              <input type="text" id="bankName" placeholder="DBS, OCBC, UOB, etc." />
+
+              <label for="accountNumber">Account Number</label>
+              <input type="text" id="accountNumber" placeholder="1234567890" />
+
+              <label for="accountName">Account Holder Name</label>
+              <input type="text" id="accountName" placeholder="John Doe" />
+
+              <label for="swiftCode">SWIFT/BIC Code (Optional)</label>
+              <input type="text" id="swiftCode" placeholder="DBSSSGSG" />
+            </div>
+
+            <div class="payment-form" id="paynow-form">
+              <label for="paynowMobile">Mobile Number</label>
+              <input type="tel" id="paynowMobile" placeholder="+65 9123 4567" />
+
+              <label for="paynowName">Name (as registered with PayNow)</label>
+              <input type="text" id="paynowName" placeholder="John Doe" />
+
+              <div class="paynow-info">
+                <p class="hint">Funds will be recorded instantly (fake bank).</p>
+              </div>
+            </div>
+          </div>
+
+          <button id="btnProcessWithdrawal" class="btn-pay" disabled>
+            Process Withdrawal
+          </button>
+
+          <div class="result" id="withdrawalResult"></div>
+        </div>
       </div>
       </div>
     </div>

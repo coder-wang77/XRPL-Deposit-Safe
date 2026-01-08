@@ -48,6 +48,21 @@ db.run(`
   )
 `);
 
+// Fake bank ledger (USD in/out)
+db.run(`
+  CREATE TABLE IF NOT EXISTS bank_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    direction TEXT NOT NULL, -- 'in' (deposit) or 'out' (payout)
+    amount_usd REAL NOT NULL,
+    reference TEXT,
+    status TEXT DEFAULT 'completed', -- 'pending' | 'completed' | 'failed'
+    metadata TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )
+`);
+
 // User wallets table - stores encrypted wallet seeds
 db.run(`
   CREATE TABLE IF NOT EXISTS user_wallets (

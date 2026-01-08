@@ -1,13 +1,11 @@
 import xrpl from "xrpl";
 import crypto from "crypto";
 import cc from "five-bells-condition";
+import { getClient } from "./utils/xrpl-client.js";
+import { XRPL_CONSTANTS } from "./utils/constants.js";
 
-// Connect to XRPL Testnet
-export async function getClient() {
-  const client = new xrpl.Client("wss://s.altnet.rippletest.net:51233");
-  await client.connect();
-  return client;
-}
+// Re-export getClient for backward compatibility
+export { getClient };
 
 // ======================
 // CONDITIONAL ESCROW UTILITIES
@@ -154,16 +152,13 @@ export async function getEscrowEntry({ client, ownerAddress, offerSequence }) {
 
 // Convert unix seconds -> ripple epoch seconds
 export function toRippleTime(unixSeconds) {
-  const RIPPLE_EPOCH_OFFSET = 946684800;
   const u = Number(unixSeconds);
   if (!Number.isFinite(u)) throw new Error("Invalid unixSeconds for toRippleTime");
-  return u - RIPPLE_EPOCH_OFFSET;
+  return u - XRPL_CONSTANTS.RIPPLE_EPOCH_OFFSET;
 }
 // Convert ripple time -> unix seconds (useful for status checks)
 export function rippleTimeToUnix(rippleSeconds) {
-  // ripple epoch starts 2000-01-01; unix epoch starts 1970-01-01
-  const RIPPLE_EPOCH_OFFSET = 946684800;
-  return Number(rippleSeconds) + RIPPLE_EPOCH_OFFSET;
+  return Number(rippleSeconds) + XRPL_CONSTANTS.RIPPLE_EPOCH_OFFSET;
 }
 
 // create an escrow from payer
@@ -193,8 +188,8 @@ export async function createEscrow({
   }
 
   // Minimum XRP amount is 0.000001 (1 drop = 0.000001 XRP)
-  if (amount < 0.000001) {
-    throw new Error(`Amount too small: minimum is 0.000001 XRP, got ${amount}`);
+  if (amount < XRPL_CONSTANTS.MIN_XRP_AMOUNT) {
+    throw new Error(`Amount too small: minimum is ${XRPL_CONSTANTS.MIN_XRP_AMOUNT} XRP, got ${amount}`);
   }
 
   // Validate finishAfterUnix
@@ -204,7 +199,7 @@ export async function createEscrow({
   }
 
   const nowUnix = Math.floor(Date.now() / 1000);
-  const minFinishUnix = nowUnix + 60; // Require at least 1 minute in the future (buffer)
+  const minFinishUnix = nowUnix + XRPL_CONSTANTS.MIN_FINISH_BUFFER_SECONDS; // Require at least 1 minute in the future (buffer)
   
   if (finish <= minFinishUnix) {
     throw new Error(
@@ -443,7 +438,6 @@ export async function createFreelancerEscrow({
   }
 
   // Create escrow with condition
-<<<<<<< HEAD
   // For conditional escrows:
   // - Client can finish anytime by providing fulfillment (condition)
   // - FinishAfter is a fallback time (set to allow early finishing)
@@ -453,18 +447,12 @@ export async function createFreelancerEscrow({
   // Set finishAfterUnix to 1 hour before deadline, but ensure:
   // 1. It's at least 1 minute in the future (validation requirement)
   // 2. It's at least 1 minute before deadline (so finishAfterUnix < cancelAfterUnix)
-  let finishAfterUnix = Math.max(nowUnix + 60, deadlineUnix - 3600);
+  let finishAfterUnix = Math.max(nowUnix + XRPL_CONSTANTS.MIN_FINISH_BUFFER_SECONDS, deadlineUnix - 3600);
   // Ensure it's still less than the deadline
   if (finishAfterUnix >= deadlineUnix) {
-    finishAfterUnix = deadlineUnix - 60; // At least 1 minute before deadline
+    finishAfterUnix = deadlineUnix - XRPL_CONSTANTS.MIN_FINISH_BUFFER_SECONDS; // At least 1 minute before deadline
   }
   
-=======
-  // FinishAfter is set to deadline - this allows:
-  // 1. Client can finish early by providing fulfillment (when satisfied)
-  // 2. Auto-refund becomes available after deadline if condition not fulfilled
-  // Note: cancelAfterUnix must be > finishAfterUnix, so we add 1 second to deadline
->>>>>>> 37db7b2a52ef8bf24def37ab9da7b8a02cc7f554
   const result = await createEscrow({
     client,
     payerWallet: clientWallet,
@@ -686,6 +674,8 @@ export async function finishEscrow({ client, payeeWallet, ownerAddress, offerSeq
     txResult,
     hash: result.result?.hash,
     validated: result.result?.validated,
+    escrowAmountDrops: escrow?.Amount || null, // XRP amount locked in escrow (drops, string)
+    escrow,
     raw: result,
   };
 }

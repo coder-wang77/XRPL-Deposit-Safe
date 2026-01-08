@@ -17,7 +17,7 @@ export class AIChecker {
    */
   static async verifyRequirement(requirement, context = {}) {
     // Simulate AI processing delay
-    await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     // Simulate AI analysis
     // In production, this would:
@@ -26,58 +26,61 @@ export class AIChecker {
     // 3. Use ML models to assess quality
     // 4. Return verification result with confidence score
 
-    const requirementLower = requirement.toLowerCase();
+    const requirementLower = String(requirement || "").toLowerCase();
     
-    // Simple rule-based verification (for demo)
-    // In production, replace with actual AI/ML model
-    let verified = false;
-    let confidence = 0.5;
-    let reason = "AI analysis pending";
+    // Deterministic, proof-aware scoring (no randomness)
+    const proofText = String(context.proofText || "").toLowerCase();
+    const proofLinks = Array.isArray(context.proofLinks) ? context.proofLinks : [];
+    const hasAnyProofText = proofText.trim().length >= 30;
+    const hasAnyLink = proofLinks.length > 0;
 
-    // Check for common quality indicators in requirement text
-    if (requirementLower.includes("test") || requirementLower.includes("pass")) {
-      // Simulate: AI checks test results, code coverage, etc.
-      verified = Math.random() > 0.3; // 70% pass rate for test-related requirements
-      confidence = verified ? 0.85 : 0.75;
-      reason = verified 
-        ? "✅ AI verified: All tests passing, code coverage adequate"
-        : "❌ AI verified: Some tests failing or coverage insufficient";
-    } else if (requirementLower.includes("document") || requirementLower.includes("readme")) {
-      // Simulate: AI checks documentation quality
-      verified = Math.random() > 0.2; // 80% pass rate for documentation
-      confidence = verified ? 0.90 : 0.70;
-      reason = verified
-        ? "✅ AI verified: Documentation complete and clear"
-        : "❌ AI verified: Documentation missing or incomplete";
-    } else if (requirementLower.includes("deploy") || requirementLower.includes("production")) {
-      // Simulate: AI checks deployment status
-      verified = Math.random() > 0.25; // 75% pass rate for deployment
-      confidence = verified ? 0.88 : 0.72;
-      reason = verified
-        ? "✅ AI verified: Successfully deployed to production"
-        : "❌ AI verified: Deployment issues detected";
-    } else if (requirementLower.includes("security") || requirementLower.includes("secure")) {
-      // Simulate: AI security scan
-      verified = Math.random() > 0.15; // 85% pass rate for security
-      confidence = verified ? 0.92 : 0.80;
-      reason = verified
-        ? "✅ AI verified: Security scan passed, no vulnerabilities found"
-        : "❌ AI verified: Security vulnerabilities detected";
-    } else if (requirementLower.includes("responsive") || requirementLower.includes("mobile")) {
-      // Simulate: AI checks responsive design
-      verified = Math.random() > 0.2; // 80% pass rate
-      confidence = verified ? 0.87 : 0.73;
-      reason = verified
-        ? "✅ AI verified: Responsive design verified across devices"
-        : "❌ AI verified: Responsive design issues found";
-    } else {
-      // Generic requirement - use general AI analysis
-      verified = Math.random() > 0.3; // 70% pass rate for generic requirements
-      confidence = verified ? 0.82 : 0.68;
-      reason = verified
-        ? "✅ AI verified: Requirement met based on service analysis"
-        : "❌ AI verified: Requirement not fully met, needs attention";
+    const hasPdf = proofLinks.some((u) => String(u).toLowerCase().includes(".pdf"));
+    const hasImage = proofLinks.some((u) => /\.(png|jpg|jpeg|webp|gif)(\?|#|$)/i.test(String(u)));
+
+    let confidence = 0.45;
+    let reasons = [];
+
+    if (hasAnyProofText) {
+      confidence += 0.2;
+      reasons.push("Proof description provided");
     }
+    if (hasAnyLink) {
+      confidence += 0.2;
+      reasons.push("Evidence link(s) provided");
+    }
+
+    // Requirement-specific boosts
+    if (requirementLower.includes("pdf")) {
+      if (hasPdf) {
+        confidence += 0.2;
+        reasons.push("PDF evidence detected");
+      } else {
+        reasons.push("No PDF link detected");
+      }
+    }
+    if (requirementLower.includes("photo") || requirementLower.includes("image") || requirementLower.includes("screenshot")) {
+      if (hasImage) {
+        confidence += 0.2;
+        reasons.push("Image evidence detected");
+      } else {
+        reasons.push("No image link detected");
+      }
+    }
+    if (requirementLower.includes("test") || requirementLower.includes("pass")) {
+      // look for common phrases
+      if (proofText.includes("test") && (proofText.includes("pass") || proofText.includes("passed"))) {
+        confidence += 0.2;
+        reasons.push("Proof mentions tests passing");
+      } else {
+        reasons.push("Proof does not mention tests passing");
+      }
+    }
+
+    confidence = Math.max(0, Math.min(0.99, confidence));
+    const verified = confidence >= 0.75;
+    const reason = verified
+      ? `✅ AI verified: ${reasons.length ? reasons.join(", ") : "Sufficient proof provided"}`
+      : `❌ AI verified: ${reasons.length ? reasons.join(", ") : "Insufficient proof"} (needs more proof/details)`;
 
     return {
       verified,
@@ -102,9 +105,16 @@ export class AIChecker {
       };
     }
 
+    // Accept either strings or objects like { text, evidenceLinks }
+    const normalized = requirements.map((r) => {
+      if (typeof r === "string") return { text: r, evidenceLinks: [] };
+      if (r && typeof r === "object") return { text: r.text || "", evidenceLinks: r.evidenceLinks || [] };
+      return { text: "", evidenceLinks: [] };
+    });
+
     // Verify each requirement in parallel
-    const verificationPromises = requirements.map((req, index) =>
-      this.verifyRequirement(req, { ...context, requirementIndex: index })
+    const verificationPromises = normalized.map((req, index) =>
+      this.verifyRequirement(req.text, { ...context, requirementIndex: index, requirement: req })
     );
 
     const results = await Promise.all(verificationPromises);

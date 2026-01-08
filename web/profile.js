@@ -1,6 +1,29 @@
 // web/profile.js
 
-const API = "http://127.0.0.1:3001";
+function getApiBase() {
+  const params = new URLSearchParams(window.location.search);
+  const port =
+    params.get("apiPort") ||
+    localStorage.getItem("API_PORT") ||
+    "3001";
+  const host =
+    params.get("apiHost") ||
+    localStorage.getItem("API_HOST") ||
+    window.location.hostname ||
+    "127.0.0.1";
+  const proto =
+    params.get("apiProto") ||
+    localStorage.getItem("API_PROTO") ||
+    (window.location.protocol === "https:" ? "https:" : "http:");
+  return `${proto}//${host}:${port}`;
+}
+
+const API = getApiBase();
+
+// Clicking the bottom-left profile area should open the Profile tab (no-op if already there)
+document.querySelector(".sidebar-footer .user-info")?.addEventListener("click", () => {
+  window.location.href = `profile.html${window.location.search || ""}`;
+});
 
 async function loadProfile() {
   try {
@@ -239,8 +262,6 @@ async function loadWalletStatus() {
       if (data.wallet && data.connected) {
         // Update wallet status display
         const statusEl = document.getElementById("walletStatus");
-        const balanceEl = document.getElementById("walletBalance");
-        const balanceItem = document.getElementById("walletBalanceItem");
         
         if (statusEl) {
           if (data.verified) {
@@ -255,13 +276,7 @@ async function loadWalletStatus() {
           }
         }
 
-        // Show balance if available
-        if (balanceEl && balanceItem && data.wallet.balanceXrp !== undefined) {
-          balanceEl.textContent = `${data.wallet.balanceXrp.toFixed(2)} XRP`;
-          balanceItem.style.display = "flex";
-          balanceItem.style.justifyContent = "space-between";
-          balanceItem.style.alignItems = "center";
-        }
+        // XRP balance removed from UI (XLUSD-only experience)
 
         // Show/hide verify button
         if (btnVerifyWallet) {
@@ -273,11 +288,9 @@ async function loadWalletStatus() {
         }
       } else if (!data.connected) {
         // Wallet not connected - show connect section, hide verify section
-        const balanceItem = document.getElementById("walletBalanceItem");
         const connectSection = document.getElementById("walletConnectSection");
         const verifySection = document.getElementById("walletVerifySection");
         
-        if (balanceItem) balanceItem.style.display = "none";
         if (verifySection) verifySection.style.display = "none";
         if (connectSection) connectSection.style.display = "block";
       }

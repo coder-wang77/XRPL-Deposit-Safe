@@ -1,6 +1,29 @@
 // web/history.js
 
-const API = "http://127.0.0.1:3001";
+function getApiBase() {
+  const params = new URLSearchParams(window.location.search);
+  const port =
+    params.get("apiPort") ||
+    localStorage.getItem("API_PORT") ||
+    "3001";
+  const host =
+    params.get("apiHost") ||
+    localStorage.getItem("API_HOST") ||
+    window.location.hostname ||
+    "127.0.0.1";
+  const proto =
+    params.get("apiProto") ||
+    localStorage.getItem("API_PROTO") ||
+    (window.location.protocol === "https:" ? "https:" : "http:");
+  return `${proto}//${host}:${port}`;
+}
+
+const API = getApiBase();
+
+// Clicking the bottom-left profile area should open the Profile tab
+document.querySelector(".sidebar-footer .user-info")?.addEventListener("click", () => {
+  window.location.href = `profile.html${window.location.search || ""}`;
+});
 
 // Load user info for sidebar
 async function loadUser() {

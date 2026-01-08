@@ -1,6 +1,47 @@
 // web/buy-xlusd.js
 
-const API = "http://127.0.0.1:3001";
+function getApiBase() {
+  const params = new URLSearchParams(window.location.search);
+  const port =
+    params.get("apiPort") ||
+    localStorage.getItem("API_PORT") ||
+    "3001";
+  const host =
+    params.get("apiHost") ||
+    localStorage.getItem("API_HOST") ||
+    window.location.hostname ||
+    "127.0.0.1";
+  const proto =
+    params.get("apiProto") ||
+    localStorage.getItem("API_PROTO") ||
+    (window.location.protocol === "https:" ? "https:" : "http:");
+  return `${proto}//${host}:${port}`;
+}
+
+const API = getApiBase();
+
+// Clicking the bottom-left profile area should open the Profile tab
+document.querySelector(".sidebar-footer .user-info")?.addEventListener("click", () => {
+  window.location.href = `profile.html${window.location.search || ""}`;
+});
+
+// Bank tab flow switching (Deposit/Withdraw)
+const flowButtons = document.querySelectorAll(".tab-btn[data-flow]");
+const depositFlow = document.getElementById("deposit-flow");
+const withdrawFlow = document.getElementById("withdraw-flow");
+let currentFlow = "deposit";
+
+flowButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const flow = btn.dataset.flow;
+    currentFlow = flow;
+    flowButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    if (depositFlow) depositFlow.classList.toggle("active", flow === "deposit");
+    if (withdrawFlow) withdrawFlow.classList.toggle("active", flow === "withdraw");
+  });
+});
 
 const amountInput = document.getElementById("amount");
 const totalAmountEl = document.getElementById("totalAmount");
@@ -13,19 +54,26 @@ const paymentResult = document.getElementById("paymentResult");
 let currentPaymentMethod = "creditcard";
 const pricePerXLUSD = 1.00; // $1 USD per XLUSD
 
-// Tab switching
+// Tab switching (payment methods only inside deposit flow)
 tabButtons.forEach((btn) => {
+  if (btn.dataset.flow) return;
+  if (btn.dataset.method === undefined) return;
   btn.addEventListener("click", () => {
     const method = btn.dataset.method;
     currentPaymentMethod = method;
 
     // Update active tab
-    tabButtons.forEach((b) => b.classList.remove("active"));
+    tabButtons.forEach((b) => {
+      if (b.dataset.method) b.classList.remove("active");
+    });
     btn.classList.add("active");
 
     // Update active form
-    paymentForms.forEach((f) => f.classList.remove("active"));
-    document.getElementById(`${method}-form`).classList.add("active");
+    paymentForms.forEach((f) => {
+      if (f.id === "deposit-flow" || f.id === "withdraw-flow") return;
+      f.classList.remove("active");
+    });
+    document.getElementById(`${method}-form`)?.classList.add("active");
 
     // Update PayNow details if needed
     if (method === "paynow") {
@@ -253,3 +301,110 @@ async function checkAuth() {
 }
 
 checkAuth();
+
+// ======================
+// WITHDRAW (Sell XLUSD) - Fake bank payout
+// ======================
+
+let currentWithdrawalMethod = "bank";
+const withdrawTabButtons = document.querySelectorAll(".tab-btn[data-method]");
+const withdrawAmountInput = document.getElementById("withdrawAmount");
+const withdrawTotalEl = document.getElementById("withdrawTotal");
+const withdrawBtn = document.getElementById("btnProcessWithdrawal");
+const withdrawalResult = document.getElementById("withdrawalResult");
+
+withdrawTabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const method = btn.dataset.method;
+    currentWithdrawalMethod = method;
+    withdrawTabButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    document.getElementById("bank-form")?.classList.toggle("active", method === "bank");
+    document.getElementById("paynow-form")?.classList.toggle("active", method === "paynow");
+  });
+});
+
+withdrawAmountInput?.addEventListener("input", () => {
+  const amount = parseFloat(withdrawAmountInput.value) || 0;
+  withdrawTotalEl.textContent = `$${(amount * 1.0).toFixed(2)} USD`;
+  if (withdrawBtn) withdrawBtn.disabled = amount <= 0;
+});
+
+function showWithdrawResult(ok, text) {
+  if (!withdrawalResult) return;
+  withdrawalResult.textContent = text;
+  withdrawalResult.className = "result";
+  if (ok === true) withdrawalResult.classList.add("ok");
+  if (ok === false) withdrawalResult.classList.add("bad");
+}
+
+withdrawBtn?.addEventListener("click", async () => {
+  const amount = parseFloat(withdrawAmountInput.value);
+  if (!amount || amount <= 0) {
+    showWithdrawResult(false, "Please enter a valid amount");
+    return;
+  }
+
+  withdrawBtn.disabled = true;
+  withdrawBtn.textContent = "Processing...";
+  showWithdrawResult(null, "");
+
+  try {
+    let accountDetails = {};
+
+    if (currentWithdrawalMethod === "bank") {
+      const bankName = document.getElementById("bankName").value.trim();
+      const accountNumber = document.getElementById("accountNumber").value.trim();
+      const accountName = document.getElementById("accountName").value.trim();
+      const swiftCode = document.getElementById("swiftCode").value.trim();
+
+      if (!bankName || !accountNumber || !accountName) {
+        showWithdrawResult(false, "Please fill in bank name, account number, and account holder name");
+        return;
+      }
+      accountDetails = { bankName, accountNumber, accountName, swiftCode };
+    } else {
+      const mobile = document.getElementById("paynowMobile").value.trim();
+      const name = document.getElementById("paynowName").value.trim();
+      if (!mobile || !name) {
+        showWithdrawResult(false, "Please fill in PayNow mobile and name");
+        return;
+      }
+      accountDetails = { mobile, name };
+    }
+
+    const res = await fetch(`${API}/api/xlusd/withdraw`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        amountXlusd: amount,
+        withdrawalMethod: currentWithdrawalMethod,
+        accountDetails,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      showWithdrawResult(false, `Withdrawal failed: ${data.error || "Unknown error"}`);
+      return;
+    }
+
+    showWithdrawResult(
+      true,
+      `✅ Withdrawal completed (fake bank)\n` +
+      `Amount: ${data.amountXlusd} XLUSD ($${data.amountUsd.toFixed(2)} USD)\n` +
+      `Reference: ${data.withdrawalId}\n` +
+      `${data.message || ""}`
+    );
+
+    withdrawAmountInput.value = "";
+    withdrawTotalEl.textContent = "$0.00 USD";
+  } catch (err) {
+    showWithdrawResult(false, `❌ Cannot reach backend: ${err.message || "Unknown error"}`);
+  } finally {
+    withdrawBtn.disabled = false;
+    withdrawBtn.textContent = "Process Withdrawal";
+  }
+});

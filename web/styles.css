@@ -915,6 +915,11 @@ input:valid:not(:placeholder-shown) {
   background: rgba(102, 126, 234, 0.05);
   border-radius: 12px;
   margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.user-info:hover {
+  background: rgba(102, 126, 234, 0.1);
 }
 
 .user-avatar {
@@ -1575,6 +1580,29 @@ input:checked + .toggle-slider:before {
   font-size: 14px;
   color: #1a202c;
   font-weight: 600;
+}
+
+/* Keep long XRPL addresses inside the card (wrap + boxed style) */
+#detailAddress {
+  display: inline-block;
+  max-width: 65%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Allow the label/value row to wrap cleanly when the address is long */
+.detail-item.address-item {
+  align-items: flex-start;
+  gap: 16px;
 }
 
 /* Withdrawal Page */

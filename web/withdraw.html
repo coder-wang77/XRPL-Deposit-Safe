@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DepositSafe | Withdraw</title>
+    <title>DepositSafe | XLUSD Deposit / Withdraw</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="page">
@@ -19,6 +19,10 @@
           <span class="menu-icon">📊</span>
           <span>Dashboard</span>
         </a>
+        <a href="buy-xlusd.html" class="menu-item active" data-page="buy">
+          <span class="menu-icon">💰</span>
+          <span>XLUSD Deposit / Withdraw</span>
+        </a>
         <a href="history.html" class="menu-item" data-page="history">
           <span class="menu-icon">📜</span>
           <span>History</span>
@@ -26,18 +30,6 @@
         <a href="settings.html" class="menu-item" data-page="settings">
           <span class="menu-icon">⚙️</span>
           <span>Settings</span>
-        </a>
-        <a href="buy-xlusd.html" class="menu-item" data-page="buy">
-          <span class="menu-icon">💰</span>
-          <span>Buy XLUSD</span>
-        </a>
-        <a href="withdraw.html" class="menu-item active" data-page="withdraw">
-          <span class="menu-icon">💸</span>
-          <span>Withdraw</span>
-        </a>
-        <a href="profile.html" class="menu-item" data-page="profile">
-          <span class="menu-icon">👤</span>
-          <span>Profile</span>
         </a>
       </div>
 
@@ -62,15 +54,13 @@
     <div class="main-content">
       <div class="topbar">
         <div>
-          <h2>Withdraw Funds</h2>
-          <p class="muted">Convert your XLUSD back to fiat currency</p>
+          <h2>XLUSD Deposit / Withdraw</h2>
+          <p class="muted">Withdraw is now inside the XLUSD Deposit / Withdraw page.</p>
         </div>
-        <div class="topbar-actions">
-          <div class="balance-display">
-            <span class="balance-label">Available:</span>
-            <span class="balance-value" id="availableBalance">Loading...</span>
-          </div>
-        </div>
+      </div>
+
+      <div class="card">
+        <p class="muted">Redirecting…</p>
       </div>
 
       <div class="withdraw-container">
@@ -184,6 +174,9 @@
       </div>
     </div>
 
-    <script src="withdraw.js"></script>
+    <script>
+      // Keep old link working
+      window.location.replace("buy-xlusd.html" + (window.location.search || ""));
+    </script>
   </body>
 </html>
