@@ -18,6 +18,7 @@ import {
   validatePreimage,
   createFreelancerEscrow,
   createQAEscrow,
+  dropsToXrp,
 } from "./xrpl.js";
 import AIChecker from "./ai-checker.js";
 import {
@@ -202,7 +203,7 @@ async function convertEscrowXrpToXlusd({ client, wallet, issuer, escrowAmountDro
     ok: true,
     txHash: result.result?.hash,
     txResult,
-    spentXrp: Number(xrpl.dropsToXrp(maxSpendDrops.toString())),
+    spentXrp: Number(dropsToXrp(maxSpendDrops.toString())),
     deliveredXlusd,
   };
 }
@@ -621,7 +622,7 @@ app.post("/api/wallet/verify", requireAuth, async (req, res) => {
           if (accountInfo.result.account_data) {
             // Get wallet balance
             const balanceDrops = accountInfo.result.account_data.Balance || "0";
-            const balanceXrp = parseFloat(xrpl.dropsToXrp(balanceDrops));
+            const balanceXrp = parseFloat(dropsToXrp(balanceDrops));
             
             // Verify seed matches address (sanity check)
             try {
@@ -771,7 +772,7 @@ app.get("/api/wallet/status", requireAuth, async (req, res) => {
           }
 
           const balanceDrops = accountInfo.result.account_data?.Balance || "0";
-          const balanceXrp = parseFloat(xrpl.dropsToXrp(balanceDrops));
+          const balanceXrp = parseFloat(dropsToXrp(balanceDrops));
           const sequence = accountInfo.result.account_data?.Sequence || 0;
           
           // Combine real XRPL balance with simulated balance
@@ -2440,7 +2441,7 @@ app.post("/api/xlusd/buy", requireAuth, async (req, res) => {
     
     // Calculate price: XRP per XLUSD
     const xrpAmount = typeof takerPays === "string" 
-      ? parseFloat(xrpl.dropsToXrp(takerPays))
+      ? parseFloat(dropsToXrp(takerPays))
       : parseFloat(takerPays.value || 0);
     const xlusdAmount = typeof takerGets === "string"
       ? parseFloat(takerGets)
@@ -2680,7 +2681,7 @@ app.get("/api/test/wallet", async (req, res) => {
         ledger_index: "validated",
       });
 
-      const xrpBalance = xrpl.dropsToXrp(accountInfo.result.account_data.Balance);
+      const xrpBalance = dropsToXrp(accountInfo.result.account_data.Balance);
 
       // Get XLUSD balance
       const xlusdIssuer = process.env.XLUSD_ISSUER || "rPT1Sjq2YGrBMTttX4gZHuKu5h8VwwE4Cq";
@@ -2707,7 +2708,7 @@ app.get("/api/test/wallet", async (req, res) => {
         if (orderBook.result.offers && orderBook.result.offers.length > 0) {
           const offer = orderBook.result.offers[0];
           const xrp = typeof offer.TakerPays === "string" 
-            ? parseFloat(xrpl.dropsToXrp(offer.TakerPays))
+            ? parseFloat(dropsToXrp(offer.TakerPays))
             : parseFloat(offer.TakerPays.value || 0);
           const xlusd = typeof offer.TakerGets === "string"
             ? parseFloat(offer.TakerGets)

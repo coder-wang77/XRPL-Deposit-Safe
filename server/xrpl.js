@@ -116,6 +116,14 @@ export function xrpToDrops(xrp) {
   return xrpl.xrpToDrops(String(xrp));
 }
 
+// Convert drops -> XRP and format to a fixed number of decimal places (default: 5)
+export function dropsToXrp(drops, decimals = 5) {
+  const xrp = xrpl.dropsToXrp(String(drops));
+  const num = Number(xrp);
+  if (!Number.isFinite(num)) return xrp;
+  return num.toFixed(decimals);
+}
+
 // Read escrow from ledger (so we can check it exists + times)
 export async function getEscrowEntry({ client, ownerAddress, offerSequence }) {
   try {

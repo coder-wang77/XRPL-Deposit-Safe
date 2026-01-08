@@ -1,5 +1,6 @@
 // Test script to verify wallet and XLUSD purchase functionality
 import xrpl from "xrpl";
+import { dropsToXrp } from "./xrpl.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -41,7 +42,7 @@ async function testWallet() {
     });
 
     const xrpBalance = accountInfo.result.account_data.Balance;
-    const xrpBalanceFormatted = xrpl.dropsToXrp(xrpBalance);
+    const xrpBalanceFormatted = dropsToXrp(xrpBalance);
     console.log(`✅ XRP Balance: ${xrpBalanceFormatted} XRP`);
     
     if (parseFloat(xrpBalanceFormatted) < 10) {
@@ -93,7 +94,7 @@ async function testWallet() {
         const takerPays = bestOffer.TakerPays;
         
         const xrpAmount = typeof takerPays === "string" 
-          ? parseFloat(xrpl.dropsToXrp(takerPays))
+          ? parseFloat(dropsToXrp(takerPays))
           : parseFloat(takerPays.value || 0);
         const xlusdAmount = typeof takerGets === "string"
           ? parseFloat(takerGets)
